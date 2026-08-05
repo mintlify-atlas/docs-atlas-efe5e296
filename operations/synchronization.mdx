@@ -1,7 +1,7 @@
 ---
-title: "Flux Synchronization: Durable Worker Architecture"
+title: "Flux Synchronization: Schedules, Checkpoints, and Recovery"
 sidebarTitle: "Synchronization"
-description: "Flux uses a singleton durable sync worker to serialize DuckDB writes. Independent source schedules queue focused requests; each source checkpoint survives partial failures and worker restarts."
+description: "A singleton durable sync worker serializes DuckDB writes. Source schedules, per-scope checkpoints, and last-good retention keep data valid after failures."
 ---
 
 Flux synchronization is designed for durability. A singleton worker serializes all DuckDB writes while each data source maintains its own schedule and independent completion checkpoints. A failed scope does not discard successful sibling scopes, and a restarted worker recovers mid-flight work automatically once it acquires the released execution lease.

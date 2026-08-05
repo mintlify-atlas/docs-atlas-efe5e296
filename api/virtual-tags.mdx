@@ -1,7 +1,7 @@
 ---
-title: "Virtual Tags API Endpoints"
+title: "Virtual Tags: Dimensions, Rules, and Showback Reports"
 sidebarTitle: "Virtual Tags"
-description: "Manage virtual tag dimensions and rules, preview rule impact, query effective tags for a resource, and import or roll back tag overrides via the Flux virtual tags API."
+description: "Manage virtual tag dimensions and rules, preview rule impact, query per-resource effective tags, and bulk-import or roll back tag overrides in Flux."
 ---
 
 The virtual tags endpoints manage governance-free cost allocation dimensions, rules, and per-resource overrides. Virtual tags are governed business metadata stored entirely in Flux — they make cost and inventory classifiable even when Azure native tags are absent, inconsistent, or not yet approved for write-back. Effective-value precedence is: manual override → imported override → matching virtual-tag rule (lowest numeric priority first) → Azure native tag.

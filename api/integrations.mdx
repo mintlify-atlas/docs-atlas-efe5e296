@@ -1,7 +1,7 @@
 ---
-title: "Integration and Administration Endpoints"
+title: "Azure Integration and Administration API Endpoints"
 sidebarTitle: "Integrations"
-description: "Manage Azure integration settings, trigger synchronization, inspect cost reconciliation and history, configure budgets, and check operational health with the Flux administration endpoints."
+description: "Configure Azure integration, trigger sync, inspect cost reconciliation, manage budgets and allocation, and check operational health via the Flux admin API."
 ---
 
 The integration endpoints provide configuration management and operational visibility for Flux administrators. They cover the Azure tenant and subscription scope, on-demand synchronization, cost data completeness ledgers, budget configuration, and the health center that surfaces source, worker, and recommendation status without requiring log access.
@@ -506,4 +506,24 @@ Returns the configured data-retention windows as a read-only view of retention p
     }
   ]
 }
+```
+
+---
+
+## POST /api/dev/seed
+
+**Auth:** `admin`
+
+Triggers a one-off demo data seed for development and staging environments. Returns `204 No Content` on success. Returns `404` when the `FLUX_DEV_SEED` environment variable is not enabled — this endpoint is a no-op guard in production deployments where demo seeding is disabled.
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `204` | Seed completed successfully |
+| `404` | Demo seeding is disabled (`FLUX_DEV_SEED` is not set) |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/dev/seed" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
 ```

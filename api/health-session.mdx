@@ -4,7 +4,7 @@ sidebarTitle: "Health & Session"
 description: "GET /api/health returns runtime and database status. GET /api/session returns the authenticated user's identity, roles, and data currency information."
 ---
 
-Flux exposes two lightweight endpoints for runtime diagnostics and principal introspection. `/api/health` requires no authentication and is safe to call from infrastructure probes. `/api/session` requires a valid reader or admin session and is the authoritative source of identity and data-currency state for the shell UI.
+Flux exposes two lightweight endpoints for runtime diagnostics and principal introspection. `/api/health` requires no authentication and is safe to call from infrastructure probes. `/api/session` also requires no authentication — it always returns the caller's current identity and data-currency state, making it the authoritative source for both unauthenticated login redirects and authenticated shell state.
 
 ---
 
@@ -23,8 +23,8 @@ Returns the runtime status of the Flux API, its analytical store, and the operat
 | `version` | string | FastAPI application version (e.g. `"2.0.0"`). |
 | `database` | string | Analytical store engine — always `"duckdb"`. |
 | `operationalDatabase` | string | Control-plane back-end (`"postgresql"`, `"duckdb"`, or empty if disabled). |
-| `authMode` | string | Active authentication mode (`"local"` or `"entra"`). |
-| `analyticsReadMode` | string | Whether the instance reads from a live mutable store or a published snapshot (`"live"` or `"snapshot"`). |
+| `authMode` | string | Active authentication mode (`"mock"`, `"entra"`, or `"none"`). |
+| `analyticsReadMode` | string | Whether the instance reads from the live mutable store or a published snapshot (`"direct"` or `"snapshot"`). |
 | `analyticsSnapshotVersion` | string \| null | Present only when `analyticsReadMode` is `"snapshot"`. The version token of the currently-loaded snapshot, or `null` if no snapshot has been adopted yet. |
 
 ### Example
@@ -50,9 +50,9 @@ curl https://your-flux-host/api/health
 
 ## GET /api/session
 
-Returns the authenticated principal's identity and the data-currency provenance block used by the shell. Call this endpoint after login to populate user identity, role membership, and to show users which analytical snapshot (or live store) they are querying against.
+Returns the caller's identity and the data-currency provenance block used by the shell. The endpoint always responds — it does not enforce authentication — making it safe to call before login to check whether the user is signed in. Authenticated callers receive a full identity payload; unauthenticated callers receive the same response shape with `user` set to `null`.
 
-**Authentication:** `reader` or `admin`
+**Authentication:** None — returns the caller's current authentication state regardless of session validity.
 
 ### Response fields
 
@@ -60,11 +60,16 @@ The response is a flat object. The identity fields are provided by App Service A
 
 | Field | Type | Description |
 |---|---|---|
-| `user.email` | string | Principal email address, if available from the claims payload. |
-| `user.displayName` | string | Display name from Entra ID. |
+| `authenticated` | boolean | `true` when a valid principal was resolved; `false` for unauthenticated requests. |
+| `authMode` | string | Active authentication mode (`"mock"`, `"entra"`, or `"none"`). |
+| `user` | object \| null | `null` when unauthenticated. Present when authenticated. |
 | `user.id` | string | Object ID of the authenticated user. |
-| `roles` | string[] | Flux roles assigned to the principal, e.g. `["reader"]` or `["reader", "admin"]`. |
-| `dataCurrency.mode` | string | Matches `analyticsReadMode` from `/api/health`: `"live"` or `"snapshot"`. |
+| `user.displayName` | string | Display name from Entra ID. |
+| `user.email` | string | Principal email address, if available from the claims payload. |
+| `user.roles` | string[] | Flux roles assigned to the principal, e.g. `["reader"]` or `["reader", "admin"]`. |
+| `permissions.canRead` | boolean | `true` when the principal holds the `reader` or `admin` role. |
+| `permissions.canManageIntegrations` | boolean | `true` when the principal holds the `admin` role. |
+| `dataCurrency.mode` | string | Matches `analyticsReadMode` from `/api/health`: `"direct"` or `"snapshot"`. |
 | `dataCurrency.snapshotVersion` | string \| null | Version token of the snapshot this instance is currently serving. Present only in snapshot mode. |
 | `dataCurrency.latestVersion` | string \| null | Version token of the most-recently approved snapshot, read from the operational store. May differ from `snapshotVersion` if a newer snapshot has been approved but not yet adopted. |
 | `dataCurrency.generatedAt` | string \| null | ISO 8601 timestamp at which the latest snapshot was generated. |
@@ -77,12 +82,19 @@ The response is a flat object. The identity fields are provided by App Service A
 
 ```json
 {
+  "authenticated": true,
+  "authMode": "entra",
   "user": {
-    "email": "alice@contoso.com",
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
     "displayName": "Alice Nguyen",
-    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+    "email": "alice@contoso.com",
+    "roles": ["reader", "admin"]
   },
-  "roles": ["reader", "admin"],
+  "permissions": {
+    "canRead": true,
+    "canManageIntegrations": true,
+    "canSyncIntegrations": true
+  },
   "dataCurrency": {
     "mode": "snapshot",
     "snapshotVersion": "20240610T0412Z",

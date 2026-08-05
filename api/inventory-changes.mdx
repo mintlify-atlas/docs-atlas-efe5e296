@@ -1,7 +1,7 @@
 ---
 title: "Inventory and Changes Endpoints"
 sidebarTitle: "Inventory & Changes"
-description: "GET /api/inventory returns paginated Azure inventory with enrichment. GET /api/changes returns inventory diffs. GET /api/changes/anomalies returns change-volume baselines. Includes CSV and XLSX export."
+description: "Azure inventory with cost and opportunity enrichment, consecutive-snapshot diffs, and change-volume anomaly baselines. Supports CSV and XLSX export."
 ---
 
 The inventory and changes endpoints expose Azure Resource Graph snapshot data enriched with cost, utilization, and opportunity signals — plus consecutive-snapshot diffs for drift detection. All endpoints require a `reader` or `admin` session and support pagination. Export variants stream up to 50,000 rows as CSV or XLSX.

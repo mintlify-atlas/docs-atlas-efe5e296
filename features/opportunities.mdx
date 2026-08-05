@@ -1,7 +1,7 @@
 ---
 title: "Opportunities: Unified Advisor and Flux Signals Findings"
 sidebarTitle: "Opportunities"
-description: "The Flux opportunities queue combines Azure Advisor and Flux Signals findings with evidence packs, heuristic confidence scoring, provenance-aware cost valuation, and CSV/XLSX export."
+description: "Azure Advisor and Flux Signals findings with evidence packs, confidence scoring, provenance-aware valuation, actionability gating, and CSV/XLSX export."
 ---
 
 Flux presents a single unified opportunity queue that combines Azure Advisor Cost and Performance recommendations with Flux Signals findings — the deterministic, versioned rule engine built into Flux. Every finding in the queue carries evidence, a confidence score, a risk-adjusted monthly value where calculable, and an explicit actionability state. You never need to cross-reference Advisor and Flux separately to understand what to act on.
@@ -31,7 +31,7 @@ The following rules are evaluated during each Flux Intelligence sync:
 |---|---|---|
 | `stopped_allocated_vm` | VM reports `PowerState/stopped` (not deallocated) | High-impact review; compute capacity is still billed |
 | `deallocated_vm_residual_cost` | VM reports `PowerState/deallocated` | Review residual attached resources for ongoing charges |
-| `unattached_disk` | Managed disk has no `managedBy`, is `Unattached`, and does not match ASR exclusions | Review-only; confirm retention and owner approval before deletion |
+| `unattached_disk` | Managed disk has no `managedBy`, is `Unattached` or has no disk state, and does not match ASR replica/seed-disk exclusions or ASR tag heuristic | Review-only; confirm retention and owner approval before deletion |
 | `aged_snapshot` | Snapshot `timeCreated` is older than `FLUX_INTELLIGENCE_SNAPSHOT_AGE_DAYS` (default 30 days) | Review-only lifecycle candidate |
 | `premium_snapshot` | Snapshot SKU contains `Premium` | Review whether Standard snapshot storage satisfies recovery requirements |
 | `premium_disk_underutilized_review` | Attached Premium disk with ≥30 days telemetry, ≥70% coverage, combined IOPS p95 ≤ 20, combined throughput p95 ≤ 1 MiB/s | Review-stage only; no automatic target SKU or savings claim |

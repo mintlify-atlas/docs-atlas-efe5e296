@@ -1,7 +1,7 @@
 ---
-title: "Flux Data Model: DuckDB Tables and Schema"
+title: "Flux Data Model: Tables, Schemas, and Design Principles"
 sidebarTitle: "Data Model"
-description: "Reference guide to every DuckDB table Flux manages, organized by domain: inventory snapshots, cost data, anomalies, opportunities, telemetry, intelligence, and operational state."
+description: "Reference for every DuckDB table Flux manages: inventory snapshots, cost data, anomalies, opportunities, telemetry, intelligence, and operational state."
 ---
 
 Flux stores all data in a single DuckDB file located at `FLUX_DUCKDB_PATH` (default `data/flux.duckdb`). The schema is designed to be append-only — collections add rows and materialized "current" tables present the latest state for each resource or scope. Nothing is overwritten on collection; historical snapshots accumulate alongside current views.
@@ -78,7 +78,7 @@ Flux stores all data in a single DuckDB file located at `FLUX_DUCKDB_PATH` (defa
 | `rule_opportunities_current` | The latest Flux Signals findings per resource. |
 | `opportunity_confidence_snapshots` | Reproducible heuristic confidence scores built from persistence, corroboration, evidence freshness, and telemetry coverage. Method-versioned. |
 | `opportunity_confidence_current` | The latest confidence score per opportunity. |
-| `opportunity_valuation_snapshots` | Method-versioned gross and risk-adjusted monthly opportunity values with current Cost Management run rate, target retail meter, Advisor fallback, and calculation lineage. |
+| `opportunity_valuation_snapshots_v2` | Method-versioned gross and risk-adjusted monthly opportunity values with current Cost Management run rate, target retail meter, Advisor fallback, and calculation lineage. |
 | `opportunity_valuation_current` | The latest valuation per opportunity. |
 
 ---

@@ -1,7 +1,7 @@
 ---
-title: "Configure Microsoft Entra Authentication and Managed Identity"
+title: "Configure Entra Authentication and Managed Identity"
 sidebarTitle: "Entra Identity"
-description: "Configure Microsoft Entra app roles for user authorization, enable App Service managed identity for secretless Azure access, and assign the required RBAC roles across your subscriptions."
+description: "Configure Entra app roles and managed identity for Flux. Assign Azure RBAC to enable secretless access to Resource Graph, Advisor, and Cost Management."
 ---
 
 Flux separates user authorization from Azure service authorization into two completely independent identity paths. Users authenticate with Microsoft Entra ID — App Service Authentication validates the token and injects the claims principal before the request reaches Flux. Flux authenticates to Azure with its managed identity — no client secret exists in either path. The two identities never borrow each other's permissions, and a third workload-identity federation credential scoped only to App Service deployment completes the boundary.

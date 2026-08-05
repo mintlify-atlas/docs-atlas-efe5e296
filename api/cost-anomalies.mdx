@@ -1,7 +1,7 @@
 ---
 title: "Cost Anomaly Endpoints"
 sidebarTitle: "Cost Anomalies"
-description: "GET /api/cost/anomalies returns seasonal anomaly findings with baseline evidence. PUT /api/cost/anomalies/review lets admins set investigation status. Includes contributors and CSV export."
+description: "Seasonal cost anomaly findings at subscription, service, and resource scope with investigation lifecycle, contributor drilldown, and CSV export."
 ---
 
 The cost anomaly endpoints expose Flux's seasonal median/MAD anomaly detection results at subscription, service, and resource scope. Flux evaluates finalized daily spend against a matching-weekday baseline, producing deterministic k-scores and severity classifications that persist across sync cycles. Admins can advance findings through an investigation lifecycle. Evidence packs with contributor drilldown are available through companion endpoints.

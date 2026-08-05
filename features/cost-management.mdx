@@ -1,7 +1,7 @@
 ---
-title: "Cost Management: Actual, Amortized, FOCUS, and Anomaly Detection"
+title: "Cost Management: FOCUS, History, and Anomaly Detection"
 sidebarTitle: "Cost Management"
-description: "Flux collects Azure actual and amortized costs, ingests FOCUS v1.0 charge exports, maintains 90-day daily cost history, and evaluates spend using seasonal median/MAD anomaly detection."
+description: "Azure costs with FOCUS v1.0 charge ingestion, 90-day daily history, and median/MAD anomaly detection across subscription, service, and resource scopes."
 ---
 
 Flux maintains three independent cost data tracks that together cover your Azure spend from different angles: month-to-date cost summaries via the Cost Management Query API, a 90-day daily cost history for trend analysis and anomaly detection, and a FOCUS v1.0 charge-level ledger for charge-by-charge investigation. Each track has its own collection schedule, its own staleness state, and its own precedence rules, so coverage gaps in one track do not corrupt the others.
@@ -48,6 +48,7 @@ Flux ingests Microsoft Cost Management FOCUS v1.0 exports as the governed charge
 
 | Setting | Variable | Default |
 |---|---|---|
+| Enable ingestion | `FLUX_FOCUS_COST_ENABLED` | `true` |
 | Storage account | `FLUX_FOCUS_STORAGE_ACCOUNT_URL` | `https://<account>.blob.core.windows.net` |
 | Container | `FLUX_FOCUS_STORAGE_CONTAINER` | `cost-management` |
 | Blob prefix | `FLUX_FOCUS_STORAGE_PREFIX` | `focus/` |

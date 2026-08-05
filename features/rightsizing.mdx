@@ -1,7 +1,7 @@
 ---
 title: "VM Right-Sizing: Multi-Source Telemetry and Planning Boards"
 sidebarTitle: "Right-Sizing"
-description: "Flux classifies VMs as idle or resize candidates by reconciling Azure Monitor and LogicMonitor telemetry with Azure Advisor corroboration. Planning boards turn candidates into purchase decisions."
+description: "Each VM receives an explicit coverage state. Azure Monitor and LogicMonitor telemetry with Advisor corroboration drives idle and resize classification."
 ---
 
 Flux provides deterministic VM right-sizing backed by governed telemetry, not heuristics alone. Every VM in your estate receives an explicit coverage state that tells you whether Flux has enough evidence to make a classification — and if not, exactly what is missing. Idle candidates require complete CPU, memory, and bidirectional network evidence before Flux will recommend deallocation. Resize candidates additionally require Azure Advisor to corroborate the target SKU; Flux will not invent a resize target. The result is a conservative, explainable set of candidates rather than an optimistically large list.

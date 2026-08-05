@@ -1,7 +1,7 @@
 ---
-title: "Right-Sizing Recommendation Endpoints"
+title: "Right-Sizing Recommendations and Planning Boards API"
 sidebarTitle: "Right-Sizing"
-description: "GET /api/recommendations/rightsizing returns multi-source VM idle and resize findings. POST /api/rightsizing/boards manages planning boards. Includes quality reconciliation endpoint."
+description: "Retrieve VM right-sizing recommendations, manage planning boards and commitment buckets, record VM decisions, and import or export right-sizing plans."
 ---
 
 The right-sizing endpoints expose Flux's deterministic VM classification results and planning board management. Every VM in the estate receives an explicit coverage state — from full telemetry-backed classification through advisory corroboration to evidence-gap acknowledgement. Planning boards let your team turn those findings into reservation and savings-plan purchase decisions, captured with a full decision log.
@@ -320,6 +320,13 @@ Returns the decision log for a planning board — an ordered history of VM assig
 
 Creates or updates a commitment bucket in a planning board. Buckets represent a target SKU in a region with associated quantity and pricing assumptions (pay-as-you-go, 1-year RI, savings plan).
 
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Bucket created or updated; returns the saved bucket object |
+| `409` | Bucket belongs to a protected board and cannot be modified |
+
 ### Request body (`RightsizingBucketUpdate`)
 
 | Field | Type | Required | Description |
@@ -350,6 +357,14 @@ Removes a bucket from the plan. The bucket `key` is a compound region/SKU identi
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `key` | string | ✅ | Bucket key (1–200 chars) |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Bucket deleted; returns the removed bucket object |
+| `404` | Bucket not found |
+| `409` | Bucket belongs to a protected board and cannot be deleted |
 
 ---
 

@@ -1,7 +1,7 @@
 ---
-title: "Deploy Flux to Azure App Service"
+title: "Deploy Flux to Azure App Service — Production Setup"
 sidebarTitle: "App Service"
-description: "Step-by-step guide to deploying Flux on Azure App Service with managed identity, Easy Auth, app roles, and the production environment settings required before go-live."
+description: "Deploy Flux on Azure App Service with managed identity, Easy Auth, and app roles. Covers required production app settings and pre-go-live steps."
 ---
 
 Flux is designed for Azure App Service on Linux, using a system-assigned or user-assigned managed identity for secretless access to Azure Resource Graph, Azure Advisor, and Cost Management, and App Service Authentication (Easy Auth) for user authentication. No client secrets or publish profiles are stored in the repository or the application itself — Entra validates the user token before the request reaches Flux, and the managed identity obtains an Azure management token transparently.

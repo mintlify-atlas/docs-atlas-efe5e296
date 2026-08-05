@@ -1,7 +1,7 @@
 ---
-title: "Flux Intelligence API Endpoints"
+title: "Ask Flux Intelligence and Semantic Exploration API"
 sidebarTitle: "Intelligence"
-description: "POST /api/intelligence/chat sends a question to Ask Flux. GET /api/intelligence/review lets admins inspect recent prompts and replies. POST /api/intelligence/performance attaches browser timing."
+description: "Chat with Ask Flux, record feedback, attach browser timing, review admin transcripts, and run governed semantic queries over Azure cost and inventory."
 ---
 
 The intelligence endpoints power **Ask Flux** — Flux's governed conversational assistant — and its administrator review and performance tracking facilities. Ask Flux answers questions across cost, anomalies, optimization, right-sizing, inventory, and governance by invoking 19 declared server-side tools, each of which validates and bounds its arguments before calling the same governed services the UI uses. The model never receives a database connection, Azure credential, or arbitrary query interface; it can only name a tool and the server decides whether the call is legal.

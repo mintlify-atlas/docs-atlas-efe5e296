@@ -1,7 +1,7 @@
 ---
-title: "Flux: Azure FinOps Intelligence for Cloud Teams"
+title: "Flux: Azure FinOps Intelligence Workspace Overview"
 sidebarTitle: "Introduction"
-description: "Flux is a governed Azure FinOps workspace that synchronizes inventory, cost, and telemetry into DuckDB and surfaces explainable optimization opportunities. Learn what Flux does and how it fits your cloud operations workflow."
+description: "Flux is a governed Azure FinOps workspace that synchronizes inventory, cost, and telemetry into DuckDB and surfaces explainable optimization opportunities."
 ---
 
 Flux is a focused Azure inventory and FinOps intelligence workspace — *governed evidence, analyzed.* It synchronizes Azure Resource Graph, Azure Advisor, Cost Management, Azure Monitor, and LogicMonitor coverage into a locally-embedded DuckDB database, presents your estate through a modern React 19 dashboard, and surfaces explainable optimization opportunities with full source lineage. Built on FastAPI and Pydantic for the backend and React 19 with Vite and Recharts for the frontend, Flux is designed to be deployed as a Linux App Service behind Microsoft Entra ID Easy Auth, giving cloud teams a single, auditable workspace for every FinOps conversation.
@@ -59,7 +59,7 @@ Flux uses two independent identities that never need to share a credential:
 | Flux role | Access |
 |---|---|
 | `reader` | Overview, inventory, opportunities |
-| `admin` | All reader access, plus integration configuration and synchronization |
+| `admin` | All reader access plus integration configuration and synchronization |
 
 Group object IDs can be substituted for app-role values through `FLUX_ENTRA_ADMIN_ASSIGNMENTS` and `FLUX_ENTRA_READER_ASSIGNMENTS`. Local development defaults to a mock administrator — `FLUX_AUTH_MODE=mock` — without requiring any Entra configuration.
 

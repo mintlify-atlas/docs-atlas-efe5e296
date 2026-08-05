@@ -1,7 +1,7 @@
 ---
-title: "Flux REST API Overview"
+title: "Flux REST API — Base URL, Auth, and Endpoint Index"
 sidebarTitle: "Overview"
-description: "Flux exposes a FastAPI REST API at /api. Interactive Swagger docs live at /docs. All endpoints require authentication except /api/health. Covers base URL, versioning, and the full endpoint index."
+description: "FastAPI REST API at /api with Swagger at /docs. Covers base URL, auth modes, response formats, error codes, and the full endpoint index."
 ---
 
 Flux exposes a **FastAPI REST API (version 2.0.0)** mounted at `/api`. The same process that serves the React frontend also serves the API, so no separate backend port is needed. Interactive Swagger documentation is automatically generated and available at `/docs`. Every route except `/api/health` requires an authenticated session.
@@ -37,11 +37,12 @@ All endpoints return **JSON** unless explicitly noted:
 | Status | Condition |
 |---|---|
 | `401 Unauthorized` | Missing or unauthenticated session |
-| `402 Payment Required` | Intelligence budget exceeded |
+| `402 Payment Required` | Intelligence evaluation budget exceeded (`POST /api/semantic/expert`) |
 | `403 Forbidden` | Authenticated but insufficient role |
 | `404 Not Found` | Resource not found (anomaly, opportunity, board, etc.) |
 | `409 Conflict` | Synchronization already running, or protected board conflict |
 | `422 Unprocessable Entity` | Pydantic validation error or invalid query parameter |
+| `429 Too Many Requests` | Intelligence evaluation budget exceeded (`POST /api/intelligence/chat`) |
 | `503 Service Unavailable` | DuckDB writer is busy (`DatabaseBusyError`) — response includes `Retry-After: 15` and a `waitedSeconds` field |
 
 <Note>
@@ -68,6 +69,7 @@ When DuckDB is locked by a long-running synchronization write, all analytical re
 | `GET` | `/api/inventory/export` | Full filtered spreadsheet-safe inventory export (CSV or XLSX) | Reader |
 | `GET` | `/api/changes` | Filtered, paginated latest inventory changes | Reader |
 | `GET` | `/api/changes/anomalies` | Current change-volume baselines and anomalies | Reader |
+| `GET` | `/api/anomalies` | Legacy alias for `/api/changes/anomalies` | Reader |
 
 ### Cost Anomalies
 
@@ -222,6 +224,7 @@ When DuckDB is locked by a long-running synchronization write, all analytical re
 | `POST` | `/api/intelligence/feedback` | Submit thumbs-up/down feedback for an intelligence request | Reader |
 | `POST` | `/api/intelligence/performance` | Attach browser round-trip and render timing to an intelligence request | Reader |
 | `GET` | `/api/intelligence/review` | Recent prompt, reply, feedback, and stage-timing review | Admin |
+| `POST` | `/api/client-error` | Report a frontend render crash to the application log | Reader |
 
 ### Semantic Layer & Expert Explorer
 
@@ -253,6 +256,7 @@ When DuckDB is locked by a long-running synchronization write, all analytical re
 | `GET` | `/api/admin/database-health` | DuckDB file and table health | Admin |
 | `GET` | `/api/admin/audit` | Configuration change audit log | Admin |
 | `GET` | `/api/admin/retention` | Read-only view of data retention windows | Admin |
+| `POST` | `/api/dev/seed` | Seed demo data into an empty database (only when `FLUX_DEV_SEED=true`) | Admin |
 
 ### Remediation
 

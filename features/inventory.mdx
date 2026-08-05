@@ -1,7 +1,7 @@
 ---
 title: "Azure Inventory: Searchable Estate with Drift Detection"
 sidebarTitle: "Inventory"
-description: "Flux maintains a searchable Azure Resource Graph inventory enriched with cost and VM performance summaries. Drift detection identifies consecutive-snapshot changes using median/MAD statistical baselines."
+description: "Azure Resource Graph inventory enriched with cost and VM performance data. Snapshot drift detection flags unusual change volume using median/MAD baselines."
 ---
 
 Flux collects your Azure estate through the Azure Resource Graph API and stores each collection as an append-only snapshot in DuckDB. The current estate is always served from `resources_current` — the newest complete snapshot for each configured subscription — so a resource that disappears from a later ARG collection does not linger in the current view. The inventory page presents this current snapshot through a filterable, paginated dashboard with cost and performance enrichment layered on top.

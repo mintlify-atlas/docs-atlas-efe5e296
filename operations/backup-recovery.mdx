@@ -1,7 +1,7 @@
 ---
-title: "Database Backup and Recovery"
+title: "DuckDB Backup and Startup Recovery for Flux App Service"
 sidebarTitle: "Backup & Recovery"
-description: "Flux backs up the DuckDB analytical store to Azure Blob Storage after successful syncs. Recovery from a backup can be triggered automatically at startup or manually via the recovery API."
+description: "Flux backs up DuckDB to Azure Blob Storage after each sync and restores the latest valid backup at startup when the database fails validation."
 ---
 
 Flux provides automated DuckDB backup to Azure Blob Storage and supports recovery at startup. After each successful sync the worker checkpoints the DuckDB file and uploads it to the configured Blob container. In the event of database corruption or accidental data loss, Flux can automatically restore the latest valid backup when it starts up.

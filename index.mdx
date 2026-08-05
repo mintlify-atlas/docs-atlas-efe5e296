@@ -1,28 +1,28 @@
 ---
-title: "Flux: Azure FinOps Intelligence Workspace"
+title: "Flux: Governed Azure FinOps Intelligence Workspace"
 sidebarTitle: "Home"
-description: "Flux synchronizes Azure inventory, cost, and telemetry into a governed analytical workspace with explainable optimization opportunities and an AI assistant."
+description: "Flux synchronizes Azure inventory, cost, and VM telemetry into a governed analytical workspace with explainable opportunities and a conversational AI."
 ---
 
 Flux is a focused Azure FinOps intelligence platform. It pulls your Azure Resource Graph inventory, Cost Management data, Azure Advisor recommendations, and VM telemetry into a local DuckDB analytical store — then surfaces explainable, evidence-backed optimization opportunities through a modern React dashboard and a governed conversational AI assistant called **Ask Flux**.
 
 <CardGroup cols={2}>
-  <Card title="Quickstart" icon="rocket" href="/quickstart">
+  <Card title="Quickstart" icon="rocket" href="quickstart">
     Install Flux and connect it to your Azure subscriptions in minutes.
   </Card>
-  <Card title="Configuration" icon="gear" href="/configuration">
+  <Card title="Configuration" icon="gear" href="configuration">
     Full reference for all FLUX_ environment variables and tuning options.
   </Card>
-  <Card title="Core Features" icon="layer-group" href="/features/overview-dashboard">
+  <Card title="Core Features" icon="layer-group" href="features/overview-dashboard">
     Explore the dashboard, inventory, cost anomalies, opportunities, and right-sizing.
   </Card>
-  <Card title="Ask Flux (AI)" icon="robot" href="/features/flux-intelligence">
+  <Card title="Ask Flux (AI)" icon="robot" href="features/flux-intelligence">
     Governed conversational AI backed by 19 bounded, read-only tools.
   </Card>
-  <Card title="Deployment" icon="cloud" href="/deployment/azure-app-service">
+  <Card title="Deployment" icon="cloud" href="deployment/azure-app-service">
     Deploy to Azure App Service with managed identity and Easy Auth.
   </Card>
-  <Card title="API Reference" icon="code" href="/api/overview">
+  <Card title="API Reference" icon="code" href="api/overview">
     Browse every REST endpoint with parameters and response shapes.
   </Card>
 </CardGroup>
@@ -47,22 +47,22 @@ Flux is a focused Azure FinOps intelligence platform. It pulls your Azure Resour
 ## Key capabilities
 
 <CardGroup cols={3}>
-  <Card title="Inventory & Changes" icon="database" href="/features/inventory">
+  <Card title="Inventory & Changes" icon="database" href="features/inventory">
     Searchable Azure Resource Graph inventory with consecutive-snapshot drift detection and median/MAD anomaly baselines.
   </Card>
-  <Card title="Cost Management" icon="circle-dollar-to-slot" href="/features/cost-management">
+  <Card title="Cost Management" icon="circle-dollar-to-slot" href="features/cost-management">
     Actual and amortized cost, FOCUS v1.0 charge ledger, seasonal anomaly detection, and 90-day cost history.
   </Card>
-  <Card title="Opportunities" icon="lightbulb" href="/features/opportunities">
+  <Card title="Opportunities" icon="lightbulb" href="features/opportunities">
     Unified Advisor + Flux Signals queue with evidence packs, confidence scoring, and CSV export.
   </Card>
-  <Card title="Right-Sizing" icon="arrows-to-circle" href="/features/rightsizing">
+  <Card title="Right-Sizing" icon="arrows-to-circle" href="features/rightsizing">
     Multi-source VM classification using Azure Monitor, LogicMonitor, and Advisor corroboration.
   </Card>
-  <Card title="Virtual Tags" icon="tags" href="/operations/virtual-tags">
+  <Card title="Virtual Tags" icon="tags" href="operations/virtual-tags">
     Governed cost allocation dimensions without writing native Azure tags.
   </Card>
-  <Card title="API" icon="plug" href="/api/overview">
+  <Card title="API" icon="plug" href="api/overview">
     Full FastAPI REST surface at /api — interactive docs at /docs.
   </Card>
 </CardGroup>

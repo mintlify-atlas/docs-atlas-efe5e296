@@ -1,7 +1,7 @@
 ---
-title: "Continuous Delivery with Azure Pipelines"
+title: "Azure Pipelines CI/CD for Flux: Build, Test, and Deploy"
 sidebarTitle: "CI/CD"
-description: "Flux ships via Azure Pipelines using workload-identity federation. Commits to main trigger build, test, and deployment to Azure App Service — no publish profiles or secrets in the repository."
+description: "Azure Pipelines CI/CD for Flux using workload-identity federation. Every main commit triggers build, test, and deployment to App Service without secrets."
 ---
 
 Flux uses Azure Pipelines for CI/CD with workload-identity federation — no client secrets, publish profiles, or personal access tokens are stored in the repository. Every commit and pull request targeting `main` triggers validation; successful `main` builds proceed through a build-and-test stage, package a versioned ZIP artifact, and deploy to the Linux App Service through a workload-identity service connection. Post-deploy verification confirms the health endpoint reaches the Entra sign-in boundary before the pipeline completes.

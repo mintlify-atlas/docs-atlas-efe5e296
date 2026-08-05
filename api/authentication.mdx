@@ -1,7 +1,7 @@
 ---
-title: "Flux API Authentication and Authorization"
+title: "Flux API: Authentication, Roles, and Session Shape"
 sidebarTitle: "Authentication"
-description: "Flux authenticates users via Microsoft Entra Easy Auth in production and uses a mock admin in development. Role-based authorization separates reader and admin access at the route level."
+description: "Auth modes (mock/entra/none), Entra Easy Auth claim decoding, Flux.Reader and Flux.Admin roles, and the GET /api/session response shape."
 ---
 
 Flux uses two **completely independent** identity flows that are never mixed. Users authenticate with **Microsoft Entra ID** — App Service Easy Auth validates the token and Flux maps the injected claims to application roles. Separately, Flux itself authenticates to **Azure Resource Manager** using a **managed identity** to query ARG, Advisor, and Cost Management without a client secret. This page covers the user-facing authentication model only; for Azure managed-identity configuration see the deployment guide.
@@ -104,15 +104,14 @@ Call `GET /api/session` to inspect the resolved identity, permissions, and data 
     "logoutPath": "/.auth/logout?post_logout_redirect_uri=/"
   },
   "dataCurrency": {
-    "mode": "direct",
-    "snapshotVersion": null,
-    "latestVersion": null,
-    "generatedAt": null
+    "mode": "direct"
   }
 }
 ```
 
 In mock mode, `claimsSource` is `"mock"`, `tenantId` is `"local"`, and `user.id` is `"local-admin"`. When the user is not authenticated, `authenticated` is `false` and `user` is `null`.
+
+When `FLUX_ANALYTICS_SNAPSHOT_MODE=snapshot` is active, `dataCurrency` additionally includes `snapshotVersion` (the version adopted by this instance), and — when a publication record exists — `latestVersion` and `generatedAt`. In the default `direct` mode, only `mode` is present.
 
 ---
 
