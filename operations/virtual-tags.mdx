@@ -1,0 +1,184 @@
+---
+title: "Virtual Tags: Governed Cost Allocation Without Azure Write-Back"
+sidebarTitle: "Virtual Tags"
+description: "Virtual tags let you classify Azure costs and inventory using governed business dimensions without writing native Azure tags. Manage dimensions, rules, overrides, and showback reports from the Flux UI."
+---
+
+Virtual tags are governed business metadata stored entirely within Flux. They make cost and inventory classifiable even when Azure native tags are absent, inconsistent, or not yet approved for write-back to Azure resources. A virtual tag assignment is never automatically written to Azure — it exists only as Flux-side metadata layered over your estate.
+
+Administrators manage dimensions and rules under **Administration → Configuration → Virtual tags**. Readers consume the results under **Reports → Governance & allocation → Virtual tag showback**.
+
+## Data model
+
+Virtual tags are built from four concepts, resolved in a strict precedence order:
+
+| Concept | Description |
+|---|---|
+| **Dimension** | A reusable business axis, such as `BusinessRegion`, `CostCenter`, `Application`, `Owner`, or `Environment`. |
+| **Rule** | An effective-dated, prioritized include or exclude assignment for a dimension. Rules match inventory resources using condition groups. |
+| **Override** | A resource-specific manual or imported assignment that bypasses rule evaluation. |
+| **Native tag** | The tag inventoried directly from Azure. It remains the lowest-precedence fallback. |
+
+**Effective-value precedence** (highest wins):
+
+1. Manual override
+2. Imported override
+3. Matching virtual-tag rule (lowest numeric priority number wins among multiple matches)
+4. Azure native tag
+
+An exclusion rule can suppress a rule-derived assignment. It never deletes or conceals a manual, imported, or native value.
+
+## Rule criteria
+
+Rules support nested condition groups evaluated against inventory resources. All comparisons are case-insensitive.
+
+### Supported fields
+
+| Field | Notes |
+|---|---|
+| `subscriptionId` | Azure subscription GUID |
+| `subscriptionName` | Display name of the subscription |
+| `resourceGroup` | Resource group name |
+| `resourceType` | Azure resource type (e.g. `microsoft.compute/virtualmachines`) |
+| `region` | Azure region |
+| `name` | Resource name |
+| `nativeTag` | Native tag key/value pair from Azure inventory |
+| `serviceName` | Service name when the evaluated source exposes it |
+| `meterCategory` | Meter category when the evaluated source exposes it |
+| `billingScope` | Billing scope when the evaluated source exposes it |
+
+### Supported operators
+
+| Operator | Behavior |
+|---|---|
+| `equals` | Exact case-insensitive match |
+| `not_equals` | Does not match the given value |
+| `contains` | Value appears anywhere in the field |
+| `starts_with` | Field begins with the value |
+| `in` | Field matches any item in a list of values |
+| `exists` | Field is present and non-empty |
+| `not_exists` | Field is absent or empty |
+
+Unknown fields and operators fail closed — the condition evaluates to `false` and Flux does not silently ignore the invalid criteria. Empty groups do not match.
+
+### Nested conditions
+
+Rules use a group-level `AND` / `OR` combinator. A group can contain individual conditions and child groups, enabling arbitrarily nested logic. For example, you can express:
+
+```
+(subscriptionId equals "abc") AND (
+  (resourceType equals "microsoft.compute/virtualmachines")
+  OR
+  (nativeTag key=Environment equals "prod")
+)
+```
+
+The Flux UI edits one AND/OR group. The API evaluator supports fully nested child groups for integrations and future UI expansion.
+
+<Note>
+Legacy rules written with `subscriptionIds`, `resourceGroups`, `resourceTypes`, `regions`, `nameContains`, `namePatterns`, `tagEquals`, and `tagExists` continue to evaluate unchanged. New rules created through the UI use the generalized condition format.
+</Note>
+
+## Rule lifecycle
+
+<Steps>
+  <Step title="Preview">
+    Before saving, run a preview. The preview is read-only and returns the **affected-resource count**, total inventory count, a resource sample, and the current monthly ActualCost for matching resources. No data is changed.
+  </Step>
+  <Step title="Save">
+    Saving creates the rule with `version 1` and appends a rule audit record. Rules require at least one condition, a valid `tagKey` (1–120 tag-safe characters), and — for include rules — a `tagValue`.
+  </Step>
+  <Step title="Edit / Activate / Deactivate">
+    Any subsequent edit, activation, or deactivation increments the version and appends a new audit record. The full change history is retained.
+  </Step>
+  <Step title="Soft delete">
+    Deleting a rule in the UI sets its status to `inactive`. It is reversible — the rule and its audit trail are not destroyed.
+  </Step>
+</Steps>
+
+### Effective dates
+
+Rules accept optional `effectiveFrom` and `effectiveTo` date fields (ISO 8601 date). A rule outside its effective window does not participate in evaluation, even if its status is `active`. `effectiveFrom` must not be after `effectiveTo`.
+
+Rule `priority` is an integer between 1 and 1000. Among matching include rules, the **lowest priority number wins**.
+
+## Reporting
+
+The **Virtual tag showback** report provides a governed view of cost allocation by virtual dimension:
+
+| Feature | Description |
+|---|---|
+| Dimension and value filters | Scope the report to one dimension, one value, or both |
+| Cost totals by value | Actual and amortized cost attributed to each virtual tag value |
+| Classified vs Unclassified | Clearly shows the cost share that could not be classified |
+| Monthly trend lines | Historical cost by dimension value across months |
+| Resource-level provenance | Per-resource assignment source (`manual`, `imported`, `rule`, `native`) |
+| Inventory links | Resources link back to the Inventory page |
+| CSV export | Full classified and unclassified cost export |
+
+Report query parameters: `dimension`, `value`, `costType`, `startDate`, `endDate`.
+
+<Note>
+Historical charge rows are evaluated through **current inventory** and the **current rule set**. This is current-state reclassification, not slowly-changing historical tag reconstruction. Charge rows with no resolvable resource are labeled `Unclassified`. The report exposes this limitation in its lineage note.
+</Note>
+
+## Administration
+
+Navigate to **Administration → Configuration → Virtual tags** to manage:
+
+- **Dimensions** — create or delete reusable business axes.
+- **Rules** — create, preview, edit, activate, deactivate, and soft-delete assignment rules for any dimension.
+
+Cost allocation keys configured under Administration can reference a virtual dimension, which allows migrating from subscription-as-region to a governed `BusinessRegion` dimension without first writing native Azure tags.
+
+## API endpoints
+
+| Method | Route | Purpose |
+|---|---|---|
+| `GET` | `/api/virtual-tags/dimensions` | List all dimensions |
+| `POST` | `/api/virtual-tags/dimensions` | Create a new dimension |
+| `DELETE` | `/api/virtual-tags/dimensions/{key}` | Remove a dimension |
+| `GET` | `/api/virtual-tags/rules` | List all rules |
+| `POST` | `/api/virtual-tags/rules` | Create a rule |
+| `POST` | `/api/virtual-tags/rules/{id}/status` | Activate or deactivate a rule |
+| `DELETE` | `/api/virtual-tags/rules/{id}` | Soft-delete a rule |
+| `GET` | `/api/virtual-tags/effective` | Resolve effective tags for a resource (`?resourceId=...`) |
+| `POST` | `/api/virtual-tags/preview` | Preview matching resources without saving |
+| `POST` | `/api/virtual-tags/overrides/import` | Bulk-import resource-level overrides |
+| `POST` | `/api/virtual-tags/overrides/rollback` | Roll back a prior import using its rollback record |
+| `GET` | `/api/reports/virtual-tags` | Virtual tag showback report |
+| `GET` | `/api/reports/virtual-tags/export` | Showback CSV export |
+
+Interactive API documentation is available at `/docs`.
+
+## Ask Flux integration
+
+Ask Flux exposes virtual tag data through the `get_virtual_tag_showback` governed tool. Questions such as *"show amortized cost by BusinessRegion"* use the showback report contract rather than any direct database access.
+
+Inventory questions can also pass `virtualTagKey` and `virtualTagValue` filter parameters to the governed inventory tool to scope results to resources carrying a specific virtual dimension assignment.
+
+## Override import and rollback
+
+Large override sets (for example, enrichment worksheets) can be imported in bulk via `POST /api/virtual-tags/overrides/import`. The import is an idempotent upsert.
+
+Rolling back an import restores the prior value and source for every overridden resource. If a value did not exist before the import, rollback deletes the override. The API uses an **optimistic concurrency guard**: if a value has been changed since the import was applied, that item is reported as a conflict and is not overwritten silently.
+
+<Warning>
+Reapplying an import payload without first checking production state can overwrite newer manual or imported values and creates a more complicated rollback history. Always confirm which values are current before re-importing.
+</Warning>
+
+## Schema deployment and rollback
+
+Schema initialization for virtual tags is additive:
+
+- Creates `virtual_tag_dimensions` if absent.
+- Adds `virtual_tag_rules.effect` with default `include` if absent.
+- Retains existing rules, audit records, and overrides.
+
+Application rollback is a normal redeploy of the prior commit. The additive columns and dimension table can remain safely because older application versions ignore them. Do not drop them during a rollback.
+
+## Known limitations
+
+- Historical classification uses current effective tags. Point-in-time assignment snapshots are not yet materialized.
+- Meter category and billing scope match only when those fields are present in the evaluated record.
+- CSV is the canonical complete export. Native multi-sheet XLSX remains a reporting enhancement.

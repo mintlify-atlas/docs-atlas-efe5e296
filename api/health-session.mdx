@@ -1,0 +1,108 @@
+---
+title: "Health and Session Endpoints"
+sidebarTitle: "Health & Session"
+description: "GET /api/health returns runtime and database status. GET /api/session returns the authenticated user's identity, roles, and data currency information."
+---
+
+Flux exposes two lightweight endpoints for runtime diagnostics and principal introspection. `/api/health` requires no authentication and is safe to call from infrastructure probes. `/api/session` requires a valid reader or admin session and is the authoritative source of identity and data-currency state for the shell UI.
+
+---
+
+## GET /api/health
+
+Returns the runtime status of the Flux API, its analytical store, and the operational back-end. No authentication is required — this endpoint is designed to be called by load-balancer health probes and uptime monitors.
+
+**Authentication:** None
+
+### Response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | Always `"ok"` when the process is serving. |
+| `service` | string | Always `"flux-api"`. |
+| `version` | string | FastAPI application version (e.g. `"2.0.0"`). |
+| `database` | string | Analytical store engine — always `"duckdb"`. |
+| `operationalDatabase` | string | Control-plane back-end (`"postgresql"`, `"duckdb"`, or empty if disabled). |
+| `authMode` | string | Active authentication mode (`"local"` or `"entra"`). |
+| `analyticsReadMode` | string | Whether the instance reads from a live mutable store or a published snapshot (`"live"` or `"snapshot"`). |
+| `analyticsSnapshotVersion` | string \| null | Present only when `analyticsReadMode` is `"snapshot"`. The version token of the currently-loaded snapshot, or `null` if no snapshot has been adopted yet. |
+
+### Example
+
+```bash
+curl https://your-flux-host/api/health
+```
+
+```json
+{
+  "status": "ok",
+  "service": "flux-api",
+  "version": "2.0.0",
+  "database": "duckdb",
+  "operationalDatabase": "postgresql",
+  "authMode": "entra",
+  "analyticsReadMode": "snapshot",
+  "analyticsSnapshotVersion": "20240610T0412Z"
+}
+```
+
+---
+
+## GET /api/session
+
+Returns the authenticated principal's identity and the data-currency provenance block used by the shell. Call this endpoint after login to populate user identity, role membership, and to show users which analytical snapshot (or live store) they are querying against.
+
+**Authentication:** `reader` or `admin`
+
+### Response fields
+
+The response is a flat object. The identity fields are provided by App Service Authentication (`X-MS-CLIENT-PRINCIPAL`) and are mapped by Flux's `AuthService`.
+
+| Field | Type | Description |
+|---|---|---|
+| `user.email` | string | Principal email address, if available from the claims payload. |
+| `user.displayName` | string | Display name from Entra ID. |
+| `user.id` | string | Object ID of the authenticated user. |
+| `roles` | string[] | Flux roles assigned to the principal, e.g. `["reader"]` or `["reader", "admin"]`. |
+| `dataCurrency.mode` | string | Matches `analyticsReadMode` from `/api/health`: `"live"` or `"snapshot"`. |
+| `dataCurrency.snapshotVersion` | string \| null | Version token of the snapshot this instance is currently serving. Present only in snapshot mode. |
+| `dataCurrency.latestVersion` | string \| null | Version token of the most-recently approved snapshot, read from the operational store. May differ from `snapshotVersion` if a newer snapshot has been approved but not yet adopted. |
+| `dataCurrency.generatedAt` | string \| null | ISO 8601 timestamp at which the latest snapshot was generated. |
+
+<Note>
+`dataCurrency` is read from the operational store on a best-effort basis. If the operational store is unreachable the `dataCurrency` block will contain only `mode` and all other fields will be absent — the session response itself will still return `200`.
+</Note>
+
+### Example
+
+```json
+{
+  "user": {
+    "email": "alice@contoso.com",
+    "displayName": "Alice Nguyen",
+    "id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  },
+  "roles": ["reader", "admin"],
+  "dataCurrency": {
+    "mode": "snapshot",
+    "snapshotVersion": "20240610T0412Z",
+    "latestVersion": "20240610T0412Z",
+    "generatedAt": "2024-06-10T04:12:00Z"
+  }
+}
+```
+
+---
+
+## Error responses
+
+Both endpoints return standard FastAPI error shapes. If the analytical store is busy during a long-running writer operation, reads will receive:
+
+```json
+{
+  "detail": "The analytical database is temporarily busy while a synchronization write completes. Retry shortly.",
+  "waitedSeconds": 4.2
+}
+```
+
+The HTTP status is `503 Service Unavailable` with a `Retry-After: 15` header.

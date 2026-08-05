@@ -1,0 +1,74 @@
+---
+title: "Flux Dashboard: Estate Health and Cost at a Glance"
+sidebarTitle: "Dashboard"
+description: "The Flux overview dashboard shows estate shape, regional footprint, month-to-date actual cost, telemetry coverage, and the total valued-action opportunity queue in real time."
+---
+
+The Flux overview dashboard is the operational home screen for your Azure estate. It shows your resource footprint by type and region, month-to-date actual and amortized spend with explicit scope reconciliation, telemetry coverage across your VM fleet, and the risk-adjusted dollar total of every actionable opportunity Flux has found. All values derive from the same governed data the rest of Flux uses — nothing is estimated or interpolated for display purposes.
+
+## Estate summary
+
+The estate panel renders resource counts by type and by region in chart series so you can see the composition of your environment at a glance. Subscription-level breakdowns let you attribute footprint to specific billing scopes without leaving the dashboard.
+
+Chart series are built from the current `resources_current` view — the newest complete ARG snapshot for each configured subscription. If a subscription has not yet completed its first sync, it does not appear in the totals.
+
+<Note>
+When Flux is running in **snapshot mode**, the data currency chip in the dashboard header shows the snapshot version that is currently loaded. Each analytical read comes from that pinned snapshot rather than a live database write.
+</Note>
+
+## Cost summary
+
+The cost panel shows month-to-date spend in two tracks:
+
+| Track | Source | Scope |
+|---|---|---|
+| **Actual cost** | Cost Management Query API or FOCUS export | On-demand, reservation, and savings plan charges as billed |
+| **Amortized cost** | Cost Management Query API or FOCUS export | Commitment charges spread across the reservation or savings plan period |
+
+Flux performs explicit **current / history / commitment scope reconciliation** before reporting a total. A subscription appears in the cost summary only after its cost data has been successfully collected; subscriptions still warming up are listed separately with a coverage note rather than assumed to be zero.
+
+FOCUS export data takes precedence over Query API data for any period where a manifest has been successfully ingested. This means the actual and amortized totals on the dashboard reflect charge-level FOCUS evidence where available, and Query API data for the remainder.
+
+## Telemetry coverage
+
+Every VM in the estate receives an explicit telemetry coverage state. The dashboard coverage chip aggregates those states across your fleet:
+
+| State | Meaning |
+|---|---|
+| `no-data` | No telemetry observation has been collected for this VM |
+| `warming-up` | Telemetry is present but below the minimum evidence window or coverage threshold |
+| `partial` | CPU is covered but network or memory metrics are missing |
+| `conflicting` | Azure Monitor and LogicMonitor disagree materially on CPU utilization |
+| `actionable` | Full multi-metric evidence is available for classification |
+
+The coverage chip on the dashboard reflects the proportion of VMs in an `actionable` or better state. Low coverage means right-sizing and idle-detection results apply to only part of your fleet; expanding Azure Monitor or LogicMonitor collection improves this without any Flux configuration change.
+
+## Valued action total
+
+Flux calculates a single **risk-adjusted monthly opportunity value** — the number shown in the dashboard opportunity chip — by aggregating the individual valuations across every finding in the current opportunity queue.
+
+<CardGroup cols={2}>
+  <Card title="Gross value" icon="circle-dollar-to-slot">
+    The estimated monthly saving if every finding were acted on immediately, using retail pricing for VM resize targets or the Advisor-supplied estimate as a fallback.
+  </Card>
+  <Card title="Risk-adjusted value" icon="shield-check">
+    Gross value weighted by each finding's confidence score. Low-confidence findings contribute proportionally less to the total, so the headline number stays honest.
+  </Card>
+</CardGroup>
+
+Only findings where Flux can quantify a saving are included. Governance and review-only findings (for example, missing allocation tags or AHB eligibility reviews) are counted in the opportunity queue but contribute zero to the valued total unless a resource-level cost can be attributed.
+
+## Stale data warnings
+
+Flux shows a **staleness banner** when collected data is older than expected, but only after the scheduled collection window has passed and a grace period has elapsed. This is schedule-aware staleness: a sync that has not yet been attempted today is not stale.
+
+The banner appears when:
+
+1. The last successful sync for a source (inventory, Advisor, cost, or telemetry) completed before the expected next scheduled run time, **and**
+2. A configured grace window beyond that expected time has also passed without a new successful run.
+
+This approach prevents false warnings during the brief window between a scheduled trigger firing and its completion. If a sync is currently in progress, the dashboard shows an in-progress indicator rather than a staleness warning.
+
+<Note>
+Ad-hoc sync via **Integrations → Synchronize now** covers inventory, Advisor, and Flux Intelligence. It deliberately excludes Cost Management to avoid competing for the shared QPU quota that the daily cost jobs also use.
+</Note>

@@ -1,0 +1,165 @@
+---
+title: "Cost Anomaly Endpoints"
+sidebarTitle: "Cost Anomalies"
+description: "GET /api/cost/anomalies returns seasonal anomaly findings with baseline evidence. PUT /api/cost/anomalies/review lets admins set investigation status. Includes contributors and CSV export."
+---
+
+The cost anomaly endpoints expose Flux's seasonal median/MAD anomaly detection results at subscription, service, and resource scope. Flux evaluates finalized daily spend against a matching-weekday baseline, producing deterministic k-scores and severity classifications that persist across sync cycles. Admins can advance findings through an investigation lifecycle. Evidence packs with contributor drilldown are available through companion endpoints.
+
+---
+
+## GET /api/cost/anomalies
+
+Returns a paginated list of cost anomaly findings for the current evaluation run, filtered to the requested scope and severity.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `search` | string | `""` | Free-text search against scope name and service name. |
+| `costType` | string | `"AmortizedCost"` | Cost metric to evaluate. Must be `ActualCost` or `AmortizedCost`. |
+| `scopeType` | string | `""` | Narrow to a specific scope level: `subscription`, `service`, or `resource`. Empty returns all scope levels. |
+| `subscriptionId` | string | `""` | Filter to a single subscription GUID. |
+| `serviceName` | string | `""` | Filter to a specific Azure service name (e.g. `Virtual Machines`). |
+| `severity` | string | `""` | Filter by severity: `high` or `medium`. Empty returns both. |
+| `status` | string | `"anomalous"` | Lifecycle filter: `anomalous` (default) or `warming_up`. Empty returns all statuses. |
+| `limit` | integer | `250` | Page size. Must be between `1` and `2000`. |
+| `offset` | integer | `0` | Zero-based row offset for pagination. |
+
+### Response
+
+```json
+{
+  "items": [ /* array of anomaly findings */ ],
+  "total": 37
+}
+```
+
+Each item in `items` contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `evaluationDate` | string | ISO 8601 date on which the anomaly was detected. |
+| `costType` | string | `"ActualCost"` or `"AmortizedCost"`. |
+| `scopeType` | string | `"subscription"`, `"service"`, or `"resource"`. |
+| `scopeId` | string | The scope identifier — subscription GUID, service name, or resource ID. |
+| `severity` | string | `"high"` or `"medium"`. |
+| `currentAmount` | number | Actual spend on the evaluation date. |
+| `baselineMedian` | number | Seasonal median from matching-weekday history. |
+| `absoluteChange` | number | `currentAmount − baselineMedian`. |
+| `percentChange` | number | Percentage deviation from the baseline median. |
+| `currency` | string | ISO 4217 currency code. |
+| `baselinePoints` | integer | Number of data points used to compute the baseline. |
+| `kScore` | number | Normalized deviation score (multiples of MAD above the median). |
+| `reason` | string | Human-readable explanation of the anomaly. |
+| `reviewStatus` | string | Investigation lifecycle state: `new`, `investigating`, `acknowledged`, or `resolved`. |
+| `methodVersion` | string | Version token of the anomaly detection algorithm. |
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/cost/anomalies?severity=high&costType=AmortizedCost" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/cost/anomalies/export
+
+Streams the filtered anomaly list as a CSV file. Accepts the same filter parameters as `GET /api/cost/anomalies` (without `limit`/`offset`) and returns up to **50,000 rows**. The output format is always CSV.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+Same as `GET /api/cost/anomalies` minus `limit` and `offset`.
+
+### CSV columns
+
+`evaluationDate`, `costType`, `scopeType`, `scopeId`, `subscriptionId`, `resourceName`, `resourceId`, `resourceType`, `resourceGroup`, `serviceName`, `severity`, `currentAmount`, `baselineMedian`, `absoluteChange`, `percentChange`, `currency`, `baselinePoints`, `kScore`, `reason`, `reviewStatus`, `reviewNote`, `reviewedBy`, `reviewedAt`, `methodVersion`
+
+```bash
+curl "https://your-flux-host/api/cost/anomalies/export?scopeType=resource&severity=high" \
+  -H "Cookie: AppServiceAuthSession=<token>" \
+  -o flux-cost-anomalies.csv
+```
+
+---
+
+## PUT /api/cost/anomalies/review
+
+Advances a cost anomaly finding through the investigation lifecycle. Only admins may call this endpoint. The updated-by attribution is derived from the authenticated principal's identity.
+
+**Authentication:** `admin`
+
+### Request body
+
+```json
+{
+  "runId": "20240610T0412Z",
+  "costType": "AmortizedCost",
+  "scopeType": "subscription",
+  "scopeId": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+  "reviewStatus": "investigating",
+  "note": "Cost spike traced to a new batch job deployed on Monday."
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `runId` | string | ✓ | Evaluation run ID (matches `runId` in the anomaly list). |
+| `costType` | string | ✓ | `"ActualCost"` or `"AmortizedCost"`. |
+| `scopeType` | string | ✓ | `"subscription"`, `"service"`, or `"resource"`. |
+| `scopeId` | string | ✓ | The scope identifier for the anomaly being reviewed. |
+| `reviewStatus` | string | ✓ | Target lifecycle state: `new`, `investigating`, `acknowledged`, or `resolved`. |
+| `note` | string |  | Free-text note attached to the review action (max 2,000 characters). |
+
+### Response
+
+Returns the full updated anomaly record with the new `reviewStatus`, `reviewNote`, `reviewedBy`, and `reviewedAt` fields populated.
+
+Returns `404` if no matching anomaly record exists for the provided `runId`, `costType`, `scopeType`, and `scopeId` combination.
+
+---
+
+## GET /api/cost/anomalies/contributors
+
+Returns the previous-week service and resource contributors for a specific anomaly finding, enabling a "why did this scope spike?" drilldown without leaving the anomaly context.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+All four parameters are **required**.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `runId` | string | Evaluation run ID from the anomaly record. |
+| `costType` | string | `"ActualCost"` or `"AmortizedCost"`. |
+| `scopeType` | string | `"subscription"`, `"service"`, or `"resource"`. |
+| `scopeId` | string | The scope identifier for the anomaly. |
+
+### Response
+
+```json
+{
+  "items": [
+    {
+      "serviceName": "Virtual Machines",
+      "resourceId": "/subscriptions/.../...",
+      "amount": 1240.50,
+      "currency": "USD",
+      "percentOfScope": 38.4
+    }
+  ]
+}
+```
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/cost/anomalies/contributors?runId=20240610T0412Z&costType=AmortizedCost&scopeType=subscription&scopeId=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```

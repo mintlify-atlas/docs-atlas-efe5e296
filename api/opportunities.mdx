@@ -1,0 +1,193 @@
+---
+title: "Opportunities and Evidence Endpoints"
+sidebarTitle: "Opportunities"
+description: "GET /api/opportunities returns the unified Advisor + Flux Signals queue. GET /api/evidence/opportunity and /api/evidence/cost-anomaly return deterministic evidence packs. Includes CSV/XLSX export."
+---
+
+The opportunities endpoints expose the unified Azure Advisor recommendations and Flux Signals findings queue with filtering, rich valuation and pricing lineage, evidence packs, and tabular export. Evidence pack endpoints return deterministic, self-contained Markdown or JSON packages that contain everything needed to open a change request — opportunity context, telemetry, right-sizing data, and cost baseline evidence — without additional API calls.
+
+---
+
+## GET /api/opportunities
+
+Returns a paginated, sortable list of optimization opportunities across the estate. Each finding carries confidence scoring, full valuation lineage, pricing data, and actionability classification.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `search` | string | `""` | Free-text search against resource name, ID, type, title, and reason. |
+| `resourceId` | string | `""` | Filter to a single resource ID (exact match). |
+| `resourceType` | string | `""` | Filter by Azure resource type. |
+| `subscriptionId` | string | `""` | Filter to a single subscription GUID. |
+| `region` | string | `""` | Filter by Azure region. |
+| `source` | string | `""` | Filter by finding source (e.g. `advisor`, `flux`). |
+| `category` | string | `""` | Filter by opportunity category (e.g. `Cost`, `Performance`). |
+| `confidence` | string | `""` | Filter by confidence tier. |
+| `actionability` | string | `""` | Filter by actionability class: `actionable_now`, `portfolio_review`, `evidence_needed`, or `governance_review`. Empty returns all classes. |
+| `includeGovernance` | boolean | `false` | When `true`, includes governance-category findings in the result set. |
+| `sort` | string | `"impact"` | Sort key: `impact`, `savings`, `valuation`, `cost`, `confidence`, `updated`, or `resource`. |
+| `direction` | string | `"desc"` | Sort direction: `asc` or `desc`. |
+| `limit` | integer | `250` | Page size. Must be between `1` and `2000`. |
+| `offset` | integer | `0` | Zero-based row offset for pagination. |
+
+### Response
+
+```json
+{
+  "items": [ /* array of opportunity records */ ],
+  "total": 214
+}
+```
+
+Key fields on each item:
+
+| Field | Type | Description |
+|---|---|---|
+| `source` | string | `"advisor"` or `"flux"` (Flux Signals). |
+| `category` | string | Opportunity category (e.g. `Cost`, `HighAvailability`). |
+| `impact` | string | Azure Advisor impact level or Flux Signal severity. |
+| `confidence` | string | Confidence tier based on corroboration and evidence age. |
+| `title` | string | Short finding title. |
+| `reason` | string | One-to-two sentence evidence-grounded rationale. |
+| `resourceName` | string | Azure resource display name. |
+| `resourceId` | string | Full Azure resource ID. |
+| `resourceType` | string | Azure resource type. |
+| `subscriptionName` | string | Friendly subscription name. |
+| `subscriptionId` | string | Subscription GUID. |
+| `resourceGroup` | string | Resource group name. |
+| `region` | string | Azure region. |
+| `currentSku` | string | Current resource size or SKU. |
+| `recommendedSku` | string | Recommended target SKU, if applicable. |
+| `estimatedMonthlySavings` | number \| null | Estimated monthly savings in `savingsCurrency`. |
+| `annualSavingsAmount` | number \| null | Annualised savings projection. |
+| `actualMonthlyCost` | number \| null | Observed monthly cost run-rate for the resource. |
+| `savingsCurrency` | string | ISO 4217 currency code for savings figures. |
+| `isCorroborated` | boolean | Whether this finding is corroborated by an independent signal (e.g. Advisor + Flux telemetry). |
+| `confidenceScore` | number | Numeric 0–100 confidence score. |
+| `ageDays` | integer | Days since the finding was first observed. |
+| `consecutiveCount` | integer | Number of consecutive observation cycles the finding has persisted. |
+| `actionability` | string | `actionable_now`, `portfolio_review`, `evidence_needed`, or `governance_review`. |
+| `actionabilityReason` | string | Explanation of the actionability classification. |
+| `valuationStatus` | string | Completeness of the valuation computation. |
+| `monthlyGrossSavings` | number \| null | Gross monthly savings before risk adjustment. |
+| `monthlyRiskAdjustedSavings` | number \| null | Risk-adjusted monthly savings. |
+| `valuationCurrency` | string | Currency for valuation fields. |
+| `valuationSource` | string | Source model for the valuation. |
+| `valuationBasis` | string | Basis description (e.g. retail price, cost snapshot). |
+| `currentMonthlyCostRunRate` | number \| null | Current monthly cost run-rate from the cost snapshot. |
+| `targetMonthlyRetailCost` | number \| null | Projected monthly retail cost at the recommended target. |
+| `targetHourlyPrice` | number \| null | Hourly retail price for the recommended target SKU. |
+| `targetMeterId` | string | Azure meter ID for the target SKU. |
+| `targetMeterName` | string | Meter display name. |
+| `targetProductName` | string | Product name for the target SKU. |
+| `priceOperatingSystem` | string | OS qualifier used in price lookup. |
+| `priceLicenseModel` | string | License model qualifier (e.g. `Windows_Server`, `Linux`). |
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/opportunities?actionability=actionable_now&sort=savings&direction=desc&limit=25" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/opportunities/export
+
+Streams the filtered opportunity list as a CSV or XLSX file. Accepts the same filter and sort parameters as `GET /api/opportunities` and can return up to **50,000 rows** with full valuation and pricing lineage columns.
+
+**Authentication:** `reader`
+
+### Additional parameter
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | string | `"csv"` | `csv` or `xlsx`. |
+
+XLSX exports include a **Metadata** sheet with generation timestamp, analytics read mode, active snapshot version, and applied filters.
+
+The export includes all core response fields plus extended valuation and pricing lineage: `valuationBasis`, `valuationCostSnapshotId`, `valuationCostType`, `valuationPeriodStart`, `valuationPeriodEnd`, `valuationMethodVersion`, `valuationComputedAt`, `currentCostBasis`, `targetPriceBasis`, `targetPriceSnapshotId`, `targetPriceStatus`, `targetHoursPerMonth`, `targetPriceEffectiveStart`, `reappearedAfterRemediation`, and `confidenceMethodVersion`.
+
+```bash
+curl "https://your-flux-host/api/opportunities/export?format=xlsx&actionability=actionable_now" \
+  -H "Cookie: AppServiceAuthSession=<token>" \
+  -o flux-opportunities.xlsx
+```
+
+---
+
+## GET /api/evidence/opportunity
+
+Returns a deterministic evidence pack for a single opportunity finding. The pack contains the full opportunity record, VM telemetry (when available), right-sizing recommendation data, and a narrative summary — everything needed to author a change request without additional API calls.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `opportunityId` | string | ✓ | The `id` field from an opportunity record. |
+| `format` | string | | Output format: `markdown` (default) or `json`. |
+
+When `format=markdown`, the response is a `text/markdown` file download (`flux-opportunity-change-request.md`). When `format=json`, the full evidence pack is returned as a JSON object.
+
+Returns `404` if no opportunity with the given ID exists.
+
+### Example
+
+```bash
+# Download a Markdown change-request pack
+curl "https://your-flux-host/api/evidence/opportunity?opportunityId=<id>&format=markdown" \
+  -H "Cookie: AppServiceAuthSession=<token>" \
+  -o change-request.md
+
+# Retrieve as JSON
+curl "https://your-flux-host/api/evidence/opportunity?opportunityId=<id>&format=json" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/evidence/cost-anomaly
+
+Returns a deterministic evidence pack for a single cost anomaly finding. The pack includes the anomaly record, baseline evidence, and the previous-week contributor breakdown at service and resource scope.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+All four identity parameters are **required** — they uniquely address a single anomaly evaluation.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `runId` | string | ✓ | Evaluation run ID from the anomaly record. |
+| `costType` | string | ✓ | `"ActualCost"` or `"AmortizedCost"`. |
+| `scopeType` | string | ✓ | `"subscription"`, `"service"`, or `"resource"`. |
+| `scopeId` | string | ✓ | The scope identifier for the anomaly. |
+| `format` | string | | Output format: `markdown` (default) or `json`. |
+
+When `format=markdown`, the response is a `text/markdown` file download (`flux-cost-anomaly-change-request.md`). When `format=json`, the pack is returned as a JSON object that includes a `contributors` array at the top level.
+
+Returns `404` if no matching anomaly is found.
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/evidence/cost-anomaly?runId=20240610T0412Z&costType=AmortizedCost&scopeType=subscription&scopeId=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx&format=json" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/recommendations/quality
+
+Returns Advisor recommendation quality metadata — Azure Advisor ID resolution, semantic-action classification, resource-resolution results, and the actionability reconciliation that feeds the `actionability` field on each opportunity.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+Use this endpoint to diagnose why a specific recommendation was classified as `evidence_needed` or `governance_review` rather than `actionable_now`, or to audit the Advisor-to-Flux-Signals semantic-action mapping.

@@ -1,0 +1,356 @@
+---
+title: "Flux Intelligence API Endpoints"
+sidebarTitle: "Intelligence"
+description: "POST /api/intelligence/chat sends a question to Ask Flux. GET /api/intelligence/review lets admins inspect recent prompts and replies. POST /api/intelligence/performance attaches browser timing."
+---
+
+The intelligence endpoints power **Ask Flux** — Flux's governed conversational assistant — and its administrator review and performance tracking facilities. Ask Flux answers questions across cost, anomalies, optimization, right-sizing, inventory, and governance by invoking 19 declared server-side tools, each of which validates and bounds its arguments before calling the same governed services the UI uses. The model never receives a database connection, Azure credential, or arbitrary query interface; it can only name a tool and the server decides whether the call is legal.
+
+---
+
+## GET /api/intelligence/status
+
+**Auth:** `reader`
+
+Returns the current intelligence assistant configuration status — whether AI is enabled, which provider and models are active, and current spend against the configured budget ceiling.
+
+```bash
+curl -s "https://flux.example.com/api/intelligence/status" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## POST /api/intelligence/chat
+
+**Auth:** `reader`
+
+Sends a conversation turn to Ask Flux and returns a validated structured reply. The assistant invokes bounded governed tools to retrieve evidence, then constructs a JSON response that is validated for structure, grounding, and partial-coverage disclosure before being returned. Every reply receives a deterministic 0–100 quality score.
+
+<Warning>
+Requires `FLUX_INTELLIGENCE_AI_ENABLED=true` and a configured provider credential (`FLUX_DEEPSEEK_API_KEY`, `FLUX_OPENROUTER_API_KEY`, or `FLUX_FOUNDRY_API_KEY`). Returns `503` when AI is disabled or the provider is unreachable.
+</Warning>
+
+### Request body (`IntelligenceChatRequest`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `messages` | array | ✅ | 1–24 items | Conversation turns — each has `role` (`user` or `assistant`) and `content` (1–12,000 chars) |
+| `context` | object | | See below | UI context to anchor the reply |
+| `modelProfile` | string | | `fast` (default) or `benchmark` | Analysis depth profile |
+
+**`context` object fields:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `page` | string | `overview` | Current Flux page (max 80 chars) |
+| `filters` | object | `{}` | Active UI filter key/value pairs |
+| `selectedResourceId` | string | `` | Focused resource ID (max 2048 chars) |
+
+### Model profiles
+
+| Profile | Purpose |
+|---|---|
+| `fast` | Default for contextual panel and workspace interactions |
+| `benchmark` | Deep analysis — higher quality, higher latency and cost |
+
+### Response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `summary` | string | Concise plain-text answer |
+| `blocks` | array | Ordered reply blocks: Markdown text, governed Recharts chart specs, or strict Mermaid diagrams |
+| `facts` | array | Retrieved data points, kept distinct from interpretation |
+| `interpretation` | string | Model's reasoning over the retrieved facts |
+| `limitations` | array | Explicit coverage gaps and caveats stated before any totals |
+| `governedSources` | array | Names of governed tools invoked to produce this reply |
+| `qualityScore` | integer | Deterministic 0–100 quality score covering structure, grounding, coverage disclosure, and summary completeness |
+| `followUpQuestions` | array | Suggested follow-up questions offered by the assistant |
+| `performanceBreakdown` | object | Stage-level timing: model, tool calls, DuckDB/report services, validation, transport |
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| `422` | Malformed request body |
+| `429` | Intelligence spend budget exceeded (`FLUX_AI_STOP_AT_USD`) |
+| `502` | AI provider returned an error |
+| `503` | AI is disabled or the provider is unreachable |
+
+### Example request
+
+```bash
+curl -s -X POST "https://flux.example.com/api/intelligence/chat" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "user", "content": "What changed in amortized cost this month compared to last?"}
+    ],
+    "context": {"page": "reports/cost"},
+    "modelProfile": "fast"
+  }'
+```
+
+### Example response (truncated)
+
+```json
+{
+  "summary": "Amortized cost increased by $12,340 (8.2%) month-over-month, driven primarily by new virtual machine deployments in the Production subscription.",
+  "blocks": [
+    {
+      "type": "markdown",
+      "content": "### Month-over-month change\n| Period | Amount |\n|---|---|\n| Last month | $150,420 |\n| This month (MTD) | $162,760 |"
+    }
+  ],
+  "facts": [
+    "Production subscription: +$9,100 (new VMs: vm-web-04, vm-web-05)",
+    "Dev subscription: +$3,240 (increased storage)"
+  ],
+  "interpretation": "The increase is consistent with the two new VM deployments observed in inventory changes on 2025-07-01.",
+  "limitations": [
+    "Staging subscription cost export is missing — excluded from totals."
+  ],
+  "governedSources": ["investigate_cost_change", "search_inventory"],
+  "qualityScore": 87,
+  "followUpQuestions": [
+    "Which resource groups account for the largest share of the increase?",
+    "Are there any idle VMs that could offset this cost?"
+  ],
+  "performanceBreakdown": {
+    "modelMs": 4120,
+    "toolMs": 890,
+    "dbMs": 340,
+    "validationMs": 55,
+    "totalMs": 5600
+  }
+}
+```
+
+---
+
+## POST /api/intelligence/feedback
+
+**Auth:** `reader`
+
+Records a helpful / not-helpful rating and optional reason for a completed intelligence request. Returns `204 No Content` on success, `404` if the request ID is not found.
+
+### Request body (`IntelligenceFeedback`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `requestId` | string | ✅ | 1–80 chars | Intelligence request identifier |
+| `rating` | string | ✅ | `helpful` or `not_helpful` | Feedback signal |
+| `reason` | string | | max 500 chars | Optional free-text reason |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/intelligence/feedback" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"requestId": "req_abc123", "rating": "helpful"}'
+```
+
+---
+
+## POST /api/intelligence/performance
+
+**Auth:** `reader`
+
+Attaches browser-side round-trip and render timing to a completed intelligence request. Called automatically by the Ask Flux UI after the reply renders. Returns `204 No Content` on success, `404` if the request ID is not found.
+
+### Request body (`IntelligenceClientPerformance`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `requestId` | string | ✅ | 1–80 chars | Intelligence request identifier returned by `/api/intelligence/chat` |
+| `clientRoundTripMs` | integer | ✅ | 0–600,000 | Browser-to-API round trip in milliseconds |
+| `clientRenderMs` | integer | ✅ | 0–600,000 | Time to render the reply in milliseconds |
+| `clientEndToEndMs` | integer | ✅ | 0–600,000 | Total browser end-to-end time in milliseconds |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/intelligence/performance" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requestId": "req_abc123",
+    "clientRoundTripMs": 5800,
+    "clientRenderMs": 120,
+    "clientEndToEndMs": 5950
+  }'
+```
+
+---
+
+## GET /api/intelligence/review
+
+**Auth:** `admin` only
+
+Returns recent Ask Flux transcript events for administrator quality review. Each event includes the prompt, validated reply, invoked tools, quality score, per-stage timing, and any feedback recorded against the request. Transcript retention is governed by `FLUX_AI_TRANSCRIPT_RETENTION_DAYS` (default 30 days). Model reasoning is never retained.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `limit` | integer | `25` | Number of events to return (1–100) |
+
+### Response fields per event
+
+| Field | Type | Description |
+|---|---|---|
+| `requestId` | string | Unique request identifier |
+| `prompt` | string | The user's question as submitted |
+| `reply` | object | The validated structured reply (same shape as `/api/intelligence/chat` response) |
+| `toolsInvoked` | array | List of governed tool names called |
+| `qualityScore` | integer | 0–100 deterministic quality score |
+| `modelProfile` | string | `fast` or `benchmark` |
+| `stageTimingMs` | object | Per-stage latency breakdown |
+| `rating` | string | User feedback: `helpful`, `not_helpful`, or absent |
+| `feedbackReason` | string | Optional free-text feedback reason |
+| `createdAt` | string | ISO 8601 timestamp |
+
+```bash
+curl -s "https://flux.example.com/api/intelligence/review?limit=10" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
+## POST /api/semantic/expert
+
+**Auth:** `reader`
+
+Translates a plain-language question into validated, read-only SQL over the governed semantic views, executes it with a row cap and watchdog, and returns the results. The model proposes SQL; Flux validates every statement (read-only, allowlisted views only, no file functions) before execution. One self-correction round is attempted on validation failure; a `422` is returned if the SQL cannot be validated after both attempts.
+
+### Request body (`ExpertExplorerRequest`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `question` | string | ✅ | 3–2000 chars | Plain-language question |
+| `history` | array | | max 8 turns | Prior Q&A turns for context continuity |
+
+Each history turn (`ExpertExplorerTurn`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `question` | string | ✅ | Prior question (1–2000 chars) |
+| `sql` | string | | SQL generated for that question (max 8000 chars) |
+
+### Response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `question` | string | The original question |
+| `sql` | string | Validated SQL that was executed |
+| `columns` | array | Column name list |
+| `rows` | array | Result rows (arrays of cell values) |
+| `truncated` | boolean | `true` if results hit the row cap |
+| `rowLimit` | integer | The applied row cap |
+| `durationMs` | integer | Query execution time in milliseconds |
+| `chartType` | string | Suggested visualization: `table`, `line`, `bar`, or `area` |
+| `xKey` | string | Suggested x-axis column |
+| `yKeys` | array | Suggested y-axis column names |
+| `seriesKey` | string | Optional series/group column |
+| `explanation` | string | Plain-language explanation of the query |
+| `assumptions` | array | Explicit assumptions made during SQL generation |
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| `422` | SQL could not be validated after self-correction |
+| `429` | Intelligence spend budget exceeded |
+| `502` | SQL generation failed at the provider |
+| `503` | AI is disabled or unreachable |
+
+### Example request
+
+```bash
+curl -s -X POST "https://flux.example.com/api/semantic/expert" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Show total amortized cost by subscription for the last 30 days",
+    "history": []
+  }'
+```
+
+### Example response (truncated)
+
+```json
+{
+  "question": "Show total amortized cost by subscription for the last 30 days",
+  "sql": "SELECT subscription_name, SUM(amortized_cost) AS total_cost FROM semantic_costs WHERE charge_date >= CURRENT_DATE - 30 GROUP BY subscription_name ORDER BY total_cost DESC",
+  "columns": ["subscription_name", "total_cost"],
+  "rows": [
+    ["Production", 148320.50],
+    ["Development", 22140.00]
+  ],
+  "truncated": false,
+  "rowLimit": 5000,
+  "durationMs": 284,
+  "chartType": "bar",
+  "xKey": "subscription_name",
+  "yKeys": ["total_cost"],
+  "seriesKey": null,
+  "explanation": "Summed amortized cost grouped by subscription over the last 30 days.",
+  "assumptions": ["Date range interpreted as last 30 calendar days ending today"]
+}
+```
+
+---
+
+## GET /api/semantic
+
+**Auth:** `reader`
+
+Returns the governed semantic catalog — available models, measures, dimensions, and their descriptions. Use this to discover what can be queried through `/api/semantic/query` or the Expert Explorer.
+
+```bash
+curl -s "https://flux.example.com/api/semantic" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## POST /api/semantic/query
+
+**Auth:** `reader`
+
+Executes a structured query against the governed semantic layer. Specify a model, measures, optional dimensions and filters, and a time grain. Returns governed query results without requiring SQL.
+
+### Request body (`SemanticQueryRequest`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `model` | string | ✅ | 1–80 chars | Semantic model name (from `/api/semantic` catalog) |
+| `measures` | array | ✅ | 1–8 items | Measure names to aggregate |
+| `dimensions` | array | | max 3 items | Dimension names to group by |
+| `filters` | object | | max 6 keys; max 50 values each | Key → value-list filter map |
+| `grain` | string | | `day`, `week`, or `month` | Time grain for time-series queries |
+| `start` | string | | ISO 8601 date | Inclusive start date |
+| `end` | string | | ISO 8601 date | Inclusive end date |
+| `limit` | integer | | 1–5000 (default 1000) | Maximum rows returned |
+
+### Example request
+
+```bash
+curl -s -X POST "https://flux.example.com/api/semantic/query" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "costs",
+    "measures": ["amortized_cost"],
+    "dimensions": ["subscription_name"],
+    "grain": "month",
+    "start": "2025-01-01",
+    "end": "2025-06-30",
+    "limit": 100
+  }'
+```
+
+### Error responses
+
+| Status | Condition |
+|---|---|
+| `400` | Unknown model, measure, or dimension; filter exceeds bounds |
+| `422` | Malformed request body |

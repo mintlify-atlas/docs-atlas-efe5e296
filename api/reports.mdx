@@ -1,0 +1,250 @@
+---
+title: "Reports Endpoints: Cost, FOCUS, Workload, Governance"
+sidebarTitle: "Reports"
+description: "Report endpoints cover cost summaries, FOCUS charge investigation, workload optimization, Azure Policy governance, fiscal outlook, commitment inventory, budgets, and catalog validation."
+---
+
+The reports endpoints provide governed analysis views over Flux's analytical store, from cost summaries and rolling forecasts to governance posture and FOCUS v1.0 charge-level detail. All report endpoints require a `reader` session; write endpoints for fiscal outlook configuration require `admin`. Report data reflects the active analytical snapshot (or live store) as indicated by `/api/session`.
+
+---
+
+## GET /api/reports/cost
+
+Returns a cost summary for the requested period and scope, a per-resource breakdown, and a forward forecast series.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `costType` | string | `"AmortizedCost"` | `ActualCost` or `AmortizedCost`. |
+| `currency` | string | `""` | Preferred output currency (ISO 4217). Falls back to the estate's native currency. |
+| `startDate` | date | null | Inclusive period start (`YYYY-MM-DD`). Defaults to the start of the current month. |
+| `endDate` | date | null | Inclusive period end (`YYYY-MM-DD`). Defaults to today. |
+| `subscriptionId` | string | `""` | Narrow to a single subscription GUID. |
+| `serviceName` | string | `""` | Narrow to a single Azure service (e.g. `Virtual Machines`). |
+| `resourceId` | string | `""` | Narrow to a single resource ID. |
+| `forecastDays` | integer | `30` | Forecast horizon in days. Must be between `7` and `120`. |
+
+<Warning>
+`startDate` must be on or before `endDate`. The endpoint returns `422 Unprocessable Entity` if the constraint is violated.
+</Warning>
+
+### Response
+
+```json
+{
+  "period": { "start": "2024-06-01", "end": "2024-06-10" },
+  "summary": {
+    "total": 18420.55,
+    "currency": "USD",
+    "breakdown": { /* by service */ }
+  },
+  "resources": [ /* per-resource cost rows */ ],
+  "forecast": [ /* daily projected spend series */ ]
+}
+```
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/reports/cost?costType=AmortizedCost&forecastDays=60" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/reports/cost/export
+
+Streams the cost summary as a flat resource-level CSV or XLSX file.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+Same as `GET /api/reports/cost` plus:
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | string | `"csv"` | `csv` or `xlsx`. |
+
+### CSV/XLSX columns
+
+`costType`, `currency`, `periodStart`, `periodEnd`, `subscriptionId`, `resourceId`, `resourceName`, `resourceType`, `resourceGroup`, `region`, `cost`
+
+XLSX exports include a **Metadata** sheet with generation timestamp, analytics read mode, active snapshot version, and applied filters.
+
+---
+
+## GET /api/reports/focus-cost
+
+Returns FOCUS v1.0 charge-level data for the requested period and scope, including billed, effective, contracted, and list costs alongside pricing model, commitment discount, and manifest lineage fields.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `currency` | string | `""` | Preferred output currency. |
+| `startDate` | date | null | Inclusive period start (`YYYY-MM-DD`). |
+| `endDate` | date | null | Inclusive period end (`YYYY-MM-DD`). |
+| `subscriptionId` | string | `""` | Filter to a single subscription GUID. |
+| `serviceName` | string | `""` | Filter to a single Azure service name. |
+| `resourceId` | string | `""` | Filter to a single resource ID. |
+| `chargeCategory` | string | `""` | FOCUS `ChargeCategory` value (e.g. `Usage`, `Purchase`). |
+| `pricingCategory` | string | `""` | FOCUS `PricingCategory` value (e.g. `Standard`, `Committed`). |
+| `commitmentDiscountType` | string | `""` | FOCUS `CommitmentDiscountType` value (e.g. `Reservation`, `SavingsPlan`). |
+
+<Warning>
+`startDate` must be on or before `endDate`. Returns `422` if violated.
+</Warning>
+
+---
+
+## GET /api/reports/workload
+
+Returns a workload optimization report covering resource value classification, retirement candidates, and coverage gaps.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+The response contains sections for overall workload health, retirement candidates ranked by risk-adjusted savings, and resources where coverage signals are insufficient for a confident recommendation.
+
+---
+
+## GET /api/reports/governance
+
+Returns Azure Policy compliance posture and a per-resource drilldown.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `subscriptionId` | string | `""` | Filter to a single subscription. |
+| `assignmentId` | string | `""` | Filter to a specific policy assignment. |
+| `complianceState` | string | `""` | Filter by compliance state (e.g. `NonCompliant`, `Compliant`). |
+
+---
+
+## GET /api/reports/catalog
+
+Returns the governed report catalog — the read-only set of approved measures, dimensions, filters, lineage declarations, and guardrails that constrain what report requests can specify.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+Use this endpoint to discover available report models before calling `POST /api/reports/catalog/validate` or the semantic layer.
+
+---
+
+## POST /api/reports/catalog/validate
+
+Validates a governed report request against the approved catalog — checking that every measure, dimension, and filter key is declared and that no prohibited field is requested.
+
+**Authentication:** `reader`
+
+### Request body
+
+```json
+{
+  "reportId": "cost_by_service",
+  "measures": ["totalCost"],
+  "dimensions": ["serviceName", "subscriptionId"],
+  "filters": {
+    "costType": "AmortizedCost"
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `reportId` | string | Identifier of the target report from the catalog. |
+| `measures` | string[] | Requested aggregation measures. |
+| `dimensions` | string[] | Requested grouping dimensions. |
+| `filters` | object | Key-value filter pairs. |
+
+Returns a validation result object. Returns `422` if any field falls outside the approved catalog.
+
+---
+
+## GET /api/reports/fiscal-outlook
+
+Returns fiscal-year actuals to date, projected remaining months with confidence bounds, and budget variance. The fiscal year start month and projection assumptions are configured by admins via `PUT /api/reports/fiscal-outlook/config`.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+---
+
+## PUT /api/reports/fiscal-outlook/config
+
+Persists the fiscal year projection assumptions. Returns the updated fiscal outlook report immediately after saving.
+
+**Authentication:** `admin`
+
+### Request body
+
+```json
+{
+  "fyStartMonth": 7,
+  "costType": "AmortizedCost",
+  "growthPercentMonthly": 1.5,
+  "includePlannedSavings": true,
+  "savingsRampMonths": 3,
+  "notes": "Assumes Q4 Reserved Instance purchases will complete."
+}
+```
+
+| Field | Type | Constraints | Description |
+|---|---|---|---|
+| `fyStartMonth` | integer | 1–12, default `7` | Month number that starts the fiscal year (1 = January). |
+| `costType` | string | `ActualCost` \| `AmortizedCost` | Cost metric for projection. Default `AmortizedCost`. |
+| `growthPercentMonthly` | float | −10 to 10 | Assumed month-over-month growth rate (%). |
+| `includePlannedSavings` | boolean | — | Whether planned savings initiatives are modelled into the projection. |
+| `savingsRampMonths` | integer | 0–12 | Number of months over which planned savings ramp to full effect. |
+| `notes` | string | Max 500 chars | Optional free-text notes attached to the configuration. |
+
+---
+
+## GET /api/reports/commitments
+
+Returns the active commitment inventory providing a directional cost-mix view by pricing model (on-demand, reserved instance, savings plan, spot, and other).
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+---
+
+## GET /api/reports/budgets
+
+Returns the budget report with actuals-vs-targets comparison across configured estate and subscription scopes.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+---
+
+## GET /api/reports/executive-summary/export
+
+Streams an XLSX executive summary workbook containing key KPIs, cost trends, top opportunities, and governance posture in a format suitable for distribution to non-Flux users.
+
+**Authentication:** `reader`
+
+**No query parameters.**
+
+The response is an `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` file with a date-stamped filename (e.g. `flux-executive-2024-06-10.xlsx`).
+
+```bash
+curl "https://your-flux-host/api/reports/executive-summary/export" \
+  -H "Cookie: AppServiceAuthSession=<token>" \
+  -o flux-executive-summary.xlsx
+```

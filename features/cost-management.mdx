@@ -1,0 +1,124 @@
+---
+title: "Cost Management: Actual, Amortized, FOCUS, and Anomaly Detection"
+sidebarTitle: "Cost Management"
+description: "Flux collects Azure actual and amortized costs, ingests FOCUS v1.0 charge exports, maintains 90-day daily cost history, and evaluates spend using seasonal median/MAD anomaly detection."
+---
+
+Flux maintains three independent cost data tracks that together cover your Azure spend from different angles: month-to-date cost summaries via the Cost Management Query API, a 90-day daily cost history for trend analysis and anomaly detection, and a FOCUS v1.0 charge-level ledger for charge-by-charge investigation. Each track has its own collection schedule, its own staleness state, and its own precedence rules, so coverage gaps in one track do not corrupt the others.
+
+## Month-to-date cost
+
+The `/api/reports/cost` endpoint returns actual and amortized month-to-date cost by subscription. These values come from the Cost Management Query API (or the FOCUS ledger where a successful export exists) and are updated by the daily cost sync job.
+
+Each subscription's cost is collected independently. If a subscription's Query API call fails, Flux retains the last successful result (`last-good` retention) and marks that subscription's cost as potentially stale. The response includes a `reconciliationNotes` field listing subscriptions with incomplete or missing coverage so you can distinguish a genuine zero-spend subscription from a collection gap.
+
+<Note>
+FOCUS export data takes precedence over Query API data for any period and subscription where a manifest has been successfully ingested. A later Query API refresh cannot overwrite or double-count a period already covered by FOCUS.
+</Note>
+
+## Daily cost history
+
+Flux maintains a rolling 90-day daily cost history per subscription, cost type, resource, and service. This history powers trend charts, anomaly detection, and the fiscal-year forecast.
+
+<Steps>
+  <Step title="Initial backfill">
+    The first successful collection for a new subscription/cost-type scope backfills **90 days** of history (controlled by `FLUX_COST_HISTORY_INITIAL_DAYS`). Queries are committed in bounded date chunks (up to `FLUX_COST_HISTORY_CHUNK_DAYS` days at a time, default 14) in newest-first order so completed windows survive a mid-run failure.
+  </Step>
+  <Step title="Rolling refresh">
+    After the initial backfill completes, only the most recent **14 days** are refreshed on each daily run (`FLUX_COST_HISTORY_REFRESH_DAYS`). This keeps QPU consumption low while keeping the anomaly detection baseline current.
+  </Step>
+  <Step title="Anomaly evaluation">
+    After the daily history job commits, Flux runs the seasonal anomaly evaluation against the refreshed data for every eligible scope.
+  </Step>
+</Steps>
+
+Daily cost history runs on its own schedule: **daily at 12:30 UTC**. This is independent from the Cost Management MTD sync (daily at 11:00 UTC) so the two jobs do not compete for QPU quota.
+
+## FOCUS v1.0 charge ledger
+
+Flux ingests Microsoft Cost Management FOCUS v1.0 exports as the governed charge-level cost source. FOCUS retains purchase and usage charges with resource, service, SKU, meter, pricing, commitment, tag, and source-lineage fields.
+
+| Field | Mapping |
+|---|---|
+| `BilledCost` | Promoted to daily `ActualCost` |
+| `EffectiveCost` | Promoted to daily `AmortizedCost` |
+| `ContractedCost` / `ListCost` | Retained for contracted-price analysis |
+
+**Production ingestion configuration:**
+
+| Setting | Variable | Default |
+|---|---|---|
+| Storage account | `FLUX_FOCUS_STORAGE_ACCOUNT_URL` | `https://<account>.blob.core.windows.net` |
+| Container | `FLUX_FOCUS_STORAGE_CONTAINER` | `cost-management` |
+| Blob prefix | `FLUX_FOCUS_STORAGE_PREFIX` | `focus/` |
+| Max manifests per run | `FLUX_FOCUS_MAX_MANIFESTS_PER_RUN` | `16` |
+| Schedule | — | Every **6 hours** |
+
+Imports are **idempotent**: manifest path and charge IDs prevent a manifest from being ingested twice. A newer manifest for the same subscription and period atomically supersedes the previous run. The WebJob only lists manifests and downloads previously ungoverned runs — Microsoft Cost Management remains responsible for the daily export schedule.
+
+<Note>
+Only subscriptions with a configured FOCUS export have charge-level coverage. CSP `ListCost` is not treated as a savings baseline when the provider supplies zero or incomplete values.
+</Note>
+
+## Cost anomaly detection
+
+Flux evaluates daily spend against a **seasonal median/MAD (median absolute deviation) baseline**. The method compares each day's cost against the same weekday from prior weeks, making it insensitive to regular weekly patterns.
+
+**How the baseline is built:**
+
+<Steps>
+  <Step title="Collect matching weekdays">
+    For a given day-of-week (e.g. Tuesday), Flux collects up to `FLUX_COST_ANOMALY_BASELINE_WEEKS` (default **8**) prior Tuesday observations for the same scope.
+  </Step>
+  <Step title="Apply billed-data latency">
+    The most recent `FLUX_COST_ANOMALY_LATENCY_DAYS` (default **2**) days are excluded because Azure Cost Management may revise very recent billed data.
+  </Step>
+  <Step title="Compute a k-score">
+    Flux calculates `(observed − median) / MAD`. Scores above `FLUX_COST_ANOMALY_THRESHOLD_K` (default **3.5**) that also exceed the minimum absolute increase (`FLUX_COST_ANOMALY_MINIMUM_INCREASE`, default **10** in the row currency) are flagged as anomalous.
+  </Step>
+  <Step title="Classify and store">
+    Each anomaly finding is stored with the scope identity, k-score, baseline evidence, and observation time. Scopes with fewer than `FLUX_COST_ANOMALY_MINIMUM_HISTORY_DAYS` (default **28**) or `FLUX_COST_ANOMALY_MINIMUM_BASELINE_POINTS` (default **4**) are marked `warming_up` instead.
+  </Step>
+</Steps>
+
+Anomaly detection covers three scope types:
+
+| Scope type | Description |
+|---|---|
+| `subscription` | Aggregate daily spend for the entire subscription |
+| `service` | Daily spend grouped by Azure service within a subscription |
+| `resource` | Daily spend for a specific resource ID |
+
+**Key configuration variables:**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_COST_ANOMALY_THRESHOLD_K` | `3.5` | Robust k-score required to flag an anomaly |
+| `FLUX_COST_ANOMALY_BASELINE_WEEKS` | `8` | Maximum matching-weekday observations in the baseline |
+| `FLUX_COST_ANOMALY_LATENCY_DAYS` | `2` | Newest billed days excluded from evaluation |
+| `FLUX_COST_ANOMALY_MINIMUM_HISTORY_DAYS` | `28` | Required age of a scope before classification |
+| `FLUX_COST_ANOMALY_MINIMUM_BASELINE_POINTS` | `4` | Required matching-weekday observations |
+| `FLUX_COST_ANOMALY_MINIMUM_INCREASE` | `10` | Minimum absolute daily increase in row currency |
+
+### Anomaly review workflow
+
+Anomaly triage is an **admin-only** operation. Administrators can set a `review_status` (e.g. `acknowledged`, `resolved`, `false_positive`) and attach notes to any anomaly finding via the `PUT /api/cost/anomalies/review` endpoint. Review state is keyed to the immutable anomaly evidence so historical review decisions remain intact even if the anomaly recurs.
+
+## Cost Details fallback
+
+When the Cost Management Query API persistently fails for a scope, Flux automatically falls back to the asynchronous **Generate Cost Details** API. This fills calendar-month gaps for the affected subscription without extending the primary sync window.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_COST_DETAILS_BACKFILL_ENABLED` | `true` | Enable the async fallback |
+| `FLUX_COST_DETAILS_MAX_REPORTS_PER_RUN` | `4` | Maximum monthly reports generated by one daily job |
+| `FLUX_COST_DETAILS_POLL_INTERVAL_SECONDS` | `20` | Polling interval when Azure omits `Retry-After` |
+| `FLUX_COST_DETAILS_MAX_POLL_ATTEMPTS` | `30` | Maximum polls for one report |
+
+## Commitment inventory
+
+The commitment inventory provides a **directional cost-mix view** of your spend by pricing model — on-demand vs reservation vs savings plan. This view is backed by the `commitment_costs_current` table, which groups actual month-to-date usage cost by Meter ID and Pricing Model for each subscription.
+
+<Warning>
+Cost Management collection runs on its own paced daily jobs. The ad-hoc **Synchronize now** action in Integrations deliberately excludes Cost Management to avoid competing for QPU quota with the scheduled cost jobs.
+</Warning>

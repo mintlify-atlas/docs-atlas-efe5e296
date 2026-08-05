@@ -1,0 +1,175 @@
+---
+title: "Flux Intelligence: Governed AI Assistant for Cloud FinOps"
+sidebarTitle: "Flux Intelligence"
+description: "Ask Flux is a read-only conversational AI backed by 19 bounded server-side tools. The model never touches your database or Azure credentials — every answer traces back to a named governed tool."
+---
+
+Flux Intelligence is the umbrella capability that brings AI-assisted investigation to your Azure FinOps workspace. It has three components: **Ask Flux**, the read-only conversational assistant you interact with; the **Flux Signals engine**, the deterministic optimization rule set that runs independently of the assistant; and the **governed tool catalog**, the 19 bounded server-side APIs that power both experiences. Every number in an Ask Flux answer came from a named governed tool — the tools are listed in each reply so you can trace any figure back to its source.
+
+## Governed tool model
+
+Most "AI for your data" approaches hand a model a database connection and rely on generated SQL being correct. Flux does the opposite. The model has **no database connection, no Azure credential, no Rill endpoint, and no arbitrary query interface**. It can invoke only 19 declared server-side tools, each of which validates and bounds its arguments before calling the same governed services the Flux UI uses.
+
+The practical consequences of this design:
+
+- **Reproducibility**: any number in an answer came from a named tool over governed data.
+- **Honest gaps**: if a subscription's cost export is missing, the answer says so before stating a total. Coverage gaps are stated, not papered over.
+- **Bounded scope**: the model cannot be prompted into reading something it was never granted — there is no query surface to redirect.
+
+<Note>
+`FLUX_INTELLIGENCE_AI_ENABLED` defaults to **false**. AI features require explicit opt-in by setting this variable to `true` plus supplying credentials for a configured provider.
+</Note>
+
+## Tool catalog
+
+Tools are bounded to 50 results per search call. `FLUX_AI_MAX_TOOL_CALLS` (default **12**) limits how many tool invocations one answer may make.
+
+### Cost and billing
+
+| Tool | Returns |
+|---|---|
+| `get_cost_summary` | Actual or amortized cost summary, trends, breakdowns, movers, forecast, and lineage |
+| `get_focus_cost` | FOCUS charge-level billed, effective, contracted, and list cost with service, pricing, commitment, SKU, meter, resource, and manifest lineage |
+| `investigate_cost_change` | Daily comparison and FOCUS charge drivers in one request — the preferred entry point for "why did this change?" |
+| `get_cost_anomalies` | Seasonal anomaly findings and aggregate evaluation status |
+| `get_fiscal_year_outlook` | Fiscal-year actuals to date, projected remaining months with confidence bounds, and budget variance |
+| `get_commitment_inventory` | Active reservations: SKU, region, quantity, term, scope, 1/7/30-day utilization, and expiry |
+| `get_virtual_tag_showback` | Virtual-tag dimensions, classified and unclassified cost, monthly history, and assignment provenance |
+
+### Optimization and right-sizing
+
+| Tool | Returns |
+|---|---|
+| `search_opportunities` | Advisor and Flux Signals findings with valuation and evidence metadata |
+| `get_workload_optimization` | Workload optimization report: value, confidence, coverage gaps, aging, top opportunities |
+| `get_rightsizing_recommendations` | Deterministic right-sizing and idle findings for many resources, with current and target SKU |
+| `get_rightsizing_dossier` | The complete evidence dossier for **one** VM as a resize candidate, across every telemetry source |
+| `get_rightsizing_plan` | The human-owned purchase plan: commitment buckets, planned quantities, planner-entered economics, and decisions |
+| `create_rightsizing_board` | Creates a new empty planning board — see [Mutation boundary](#mutation-boundary) |
+
+### Inventory, telemetry, and governance
+
+| Tool | Returns |
+|---|---|
+| `search_inventory` | Current Azure inventory from governed snapshots |
+| `get_resource_telemetry` | Azure Monitor and LogicMonitor summaries for one exact resource ID |
+| `get_fleet_telemetry` | Utilization (CPU, memory, network, coverage) plus actual cost for many resources at once |
+| `get_governance_posture` | Azure Policy compliance posture and resource drilldown |
+
+### Reference
+
+| Tool | Returns |
+|---|---|
+| `get_report_catalog` | Approved reports, measures, dimensions, filters, lineage, and guardrails |
+| `search_documentation` | The approved Flux documentation allowlist and, when configured, the company wiki's Flux articles |
+
+## Mutation boundary
+
+Ask Flux has **no cloud mutation capability**. It cannot start, stop, resize, delete, tag, or purchase anything in Azure, and it cannot write to the analytical store.
+
+One tool does create Flux application state: `create_rightsizing_board` creates a new, empty planning board as a scratch space for a scenario (e.g. "Aggressive downsize option"). Its constraints are deliberate:
+
+- The new board is never primary and never affects the fiscal outlook.
+- The tool may only be called after the user has explicitly confirmed the exact board name in a later message.
+- Existing boards, placements, and decisions remain human-owned — the assistant cannot alter them.
+
+## User experiences
+
+<CardGroup cols={2}>
+  <Card title="Ask Flux panel" icon="message-lines">
+    Opens as a right-side panel from any authenticated Flux page. Shares the same in-memory conversation until the page is refreshed or the user clears it.
+  </Card>
+  <Card title="Intelligence Workspace" icon="desktop">
+    Full-page investigation experience. Shows 30-day average and p95 browser-to-render duration, quality review summary, and per-answer stage bottleneck details.
+  </Card>
+</CardGroup>
+
+Both experiences share the same governed tool catalog, the same authorization model, and the same quality scoring.
+
+## Analysis profiles
+
+| Profile | Purpose |
+|---|---|
+| **Fast** (default) | Default for contextual panel and workspace interactions |
+| **Deep analysis** | Quality, latency, reliability, and cost comparison; requires explicit UI selection |
+
+The model service is hidden behind a provider adapter and configured through secure environment settings. The UI and governed tools are not coupled to any named model.
+
+## Reply structure
+
+A validated Ask Flux reply is a structured document, not free text. It can carry:
+
+- **Summary** — a concise headline answer
+- **Markdown** — formatted analysis and tables (raw HTML is not rendered)
+- **Recharts specifications** — governed chart definitions (line, bar, or area; bounded rows and series)
+- **Mermaid diagrams** — strict security mode; click directives, custom classes, and HTML are rejected
+- **Retrieved facts** — data extracted verbatim from tool results, kept separate from interpretation
+- **Interpretation** — the model's analysis of the retrieved facts
+- **Limitations** — explicit coverage gaps or caveats before any total
+- **Governed sources** — the named tools invoked for this answer
+- **Quality score** — a deterministic 0–100 score covering structured output, governed-source grounding, partial-coverage disclosure, Markdown table validity, follow-up perspective, and summary completeness
+
+Server-owned action links connect evidence back to the relevant Flux page. Follow-up questions are offered. Per-answer performance details show model, tool, DuckDB/report, application, validation, and combined network/render timing.
+
+## Access and retention
+
+| Aspect | Detail |
+|---|---|
+| **Required role** | `Flux.Reader` or `Flux.Admin` |
+| **Prompt and reply retention** | 30 days (`FLUX_AI_TRANSCRIPT_RETENTION_DAYS`); set to `0` to disable transcript storage |
+| **Model reasoning** | Never retained |
+| **Usage metadata** | 30 days — pseudonymous user hash, model, status, latency, token counts, estimated cost, tool names, error category, optional feedback |
+| **Spending ceiling** | USD 10 evaluation budget; automatic stop/report at USD 8 (`FLUX_AI_STOP_AT_USD`) |
+
+Transcript retention is for administrator quality review only. Administrators can inspect retained prompts, validated summaries, feedback, response modes, slow-request counts, and stage bottlenecks from the Intelligence Workspace quality review panel — without accessing model reasoning.
+
+## Provider configuration
+
+Three provider adapters are available, selected with `FLUX_AI_PROVIDER` and switchable at runtime under **Administration → AI**:
+
+| Provider | `FLUX_AI_PROVIDER` | Default fast model | Default deep model |
+|---|---|---|---|
+| **DeepSeek** (default) | `deepseek` | `deepseek-v4-flash` | `deepseek-v4-pro` |
+| **OpenRouter** | `openrouter` | `google/gemini-2.5-flash-lite` | `openai/gpt-4.1-mini` |
+| **Azure AI Foundry** | `foundry` | deployment name (no default) | deployment name (no default) |
+
+**Key configuration variables:**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_INTELLIGENCE_AI_ENABLED` | `false` | Enable the assistant API — must be set to `true` |
+| `FLUX_AI_PROVIDER` | `deepseek` | Provider adapter selection |
+| `FLUX_DEEPSEEK_API_KEY` | empty | DeepSeek API key (use Key Vault reference in production) |
+| `FLUX_DEEPSEEK_CHAT_MODEL` | `deepseek-v4-flash` | Default fast model |
+| `FLUX_DEEPSEEK_BENCHMARK_MODEL` | `deepseek-v4-pro` | Deep analysis model |
+| `FLUX_OPENROUTER_API_KEY` | empty | OpenRouter API key |
+| `FLUX_FOUNDRY_ENDPOINT` | empty | Azure AI Foundry endpoint URL |
+| `FLUX_FOUNDRY_API_KEY` | empty | Foundry API key |
+| `FLUX_FOUNDRY_CHAT_MODEL` | empty | Foundry fast deployment name |
+| `FLUX_FOUNDRY_BENCHMARK_MODEL` | empty | Foundry deep deployment name |
+| `FLUX_AI_BUDGET_USD` | `10` | Evaluation budget in USD |
+| `FLUX_AI_MAX_TOOL_CALLS` | `12` | Maximum bounded governed tool calls per request |
+| `FLUX_AI_TOOL_CACHE_SECONDS` | `30` | In-process TTL for identical read-tool results |
+
+## Enabling Ask Flux
+
+<Steps>
+  <Step title="Set the feature flag">
+    ```text
+    FLUX_INTELLIGENCE_AI_ENABLED=true
+    ```
+  </Step>
+  <Step title="Choose a provider and supply credentials">
+    Set `FLUX_AI_PROVIDER` to `deepseek`, `openrouter`, or `foundry`. Supply the corresponding API key as an App Service Key Vault reference — never as a plain environment variable in the deployment pipeline.
+  </Step>
+  <Step title="Configure the model (optional)">
+    Override the default fast and deep model names if needed for your provider or procurement agreement.
+  </Step>
+  <Step title="Verify in Administration">
+    Open **Administration → AI** in Flux to confirm the provider connection and check the spending ceiling configuration.
+  </Step>
+</Steps>
+
+<Warning>
+Every provider API key must be stored as an App Service Key Vault reference. Passing keys through `appSettings` in a pipeline parameter would wipe the reference on every deployment. Apply non-secret settings additively via `az webapp config appsettings set` to preserve Key Vault references.
+</Warning>

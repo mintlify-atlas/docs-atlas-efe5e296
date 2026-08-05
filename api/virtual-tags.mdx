@@ -1,0 +1,475 @@
+---
+title: "Virtual Tags API Endpoints"
+sidebarTitle: "Virtual Tags"
+description: "Manage virtual tag dimensions and rules, preview rule impact, query effective tags for a resource, and import or roll back tag overrides via the Flux virtual tags API."
+---
+
+The virtual tags endpoints manage governance-free cost allocation dimensions, rules, and per-resource overrides. Virtual tags are governed business metadata stored entirely in Flux — they make cost and inventory classifiable even when Azure native tags are absent, inconsistent, or not yet approved for write-back. Effective-value precedence is: manual override → imported override → matching virtual-tag rule (lowest numeric priority first) → Azure native tag.
+
+---
+
+## GET /api/virtual-tags/dimensions
+
+**Auth:** `reader`
+
+Returns all available virtual tag dimensions. Each dimension is a reusable business axis such as `BusinessRegion`, `CostCenter`, `Application`, `Owner`, or `Environment`.
+
+```bash
+curl -s "https://flux.example.com/api/virtual-tags/dimensions" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Example response
+
+```json
+{
+  "dimensions": [
+    {
+      "key": "CostCenter",
+      "label": "Cost Center",
+      "description": "Business cost center for allocation",
+      "status": "active",
+      "createdAt": "2025-01-10T09:00:00Z"
+    },
+    {
+      "key": "Environment",
+      "label": "Environment",
+      "description": "Deployment environment tier",
+      "status": "active",
+      "createdAt": "2025-01-10T09:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/virtual-tags/dimensions
+
+**Auth:** `admin`
+
+Creates or updates a virtual tag dimension.
+
+### Request body
+
+Pass a dimension definition object as a JSON body. Key fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | ✅ | Unique identifier for the dimension (e.g. `CostCenter`) |
+| `label` | string | ✅ | Human-readable display name |
+| `description` | string | | Optional description |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Dimension created or updated; returns the saved dimension |
+| `422` | Validation error (e.g., invalid key format) |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/virtual-tags/dimensions" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key": "BusinessRegion", "label": "Business Region", "description": "Geographic reporting region"}'
+```
+
+---
+
+## DELETE /api/virtual-tags/dimensions/{dimension_key}
+
+**Auth:** `admin`
+
+Soft-deletes a virtual tag dimension. The dimension is marked `inactive` rather than physically removed, preserving existing rule and override history.
+
+### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `dimension_key` | The dimension key to deactivate |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Returns `{"key": "<dimension_key>", "status": "inactive"}` |
+| `404` | Dimension not found |
+
+```bash
+curl -s -X DELETE "https://flux.example.com/api/virtual-tags/dimensions/BusinessRegion" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
+## GET /api/virtual-tags/rules
+
+**Auth:** `admin`
+
+Returns all virtual tag rules. Each rule is an effective-dated, prioritized include or exclude assignment for a dimension. Rules support nested `AND`/`OR` condition groups evaluated against subscription, resource group, resource type, region, resource name, native tag key/value, service name, meter category, and billing scope.
+
+```bash
+curl -s "https://flux.example.com/api/virtual-tags/rules" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Example response (truncated)
+
+```json
+{
+  "rules": [
+    {
+      "ruleId": "rule_001",
+      "dimensionKey": "CostCenter",
+      "value": "Platform",
+      "effect": "include",
+      "priority": 10,
+      "status": "active",
+      "effectiveFrom": "2025-01-01",
+      "effectiveTo": null,
+      "conditions": {
+        "operator": "AND",
+        "conditions": [
+          {"field": "subscriptionId", "operator": "equals", "value": "00000000-0000-0000-0000-000000000001"}
+        ]
+      },
+      "version": 1,
+      "createdAt": "2025-01-15T08:30:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /api/virtual-tags/rules
+
+**Auth:** `admin`
+
+Creates or updates a virtual tag rule. Saving a rule creates a new version; edits, activation, and deactivation increment the version and append audit records.
+
+### Request body
+
+Pass a rule definition object. Key fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `dimensionKey` | string | ✅ | Target dimension key |
+| `value` | string | ✅ | The tag value to assign when the rule matches |
+| `effect` | string | | `include` (default) or `exclude` |
+| `priority` | integer | ✅ | Lower number = higher priority (evaluated first) |
+| `effectiveFrom` | string | | ISO 8601 date — rule is inactive before this date |
+| `effectiveTo` | string | | ISO 8601 date — rule is inactive after this date |
+| `conditions` | object | ✅ | Nested condition group (`AND`/`OR`) |
+
+**Supported condition fields:** `subscriptionId`, `subscriptionName`, `resourceGroup`, `resourceType`, `region`, `resourceName`, `tagKey`, `tagValue`, `serviceName`, `meterCategory`, `billingScope`
+
+**Supported operators:** `equals`, `not_equals`, `contains`, `starts_with`, `in`, `exists`, `not_exists`
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Rule created or updated; returns the saved rule |
+| `422` | Validation error (e.g., unknown field or operator) |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/virtual-tags/rules" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "dimensionKey": "Environment",
+    "value": "Production",
+    "effect": "include",
+    "priority": 10,
+    "conditions": {
+      "operator": "AND",
+      "conditions": [
+        {"field": "resourceGroup", "operator": "contains", "value": "prod"}
+      ]
+    }
+  }'
+```
+
+---
+
+## POST /api/virtual-tags/rules/{rule_id}/status
+
+**Auth:** `admin`
+
+Activates or deactivates an existing rule. Deactivated rules do not participate in evaluation.
+
+### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `rule_id` | Rule identifier |
+
+### Request body
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `status` | string | ✅ | New status value (e.g., `active` or `inactive`) |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Returns `{"ruleId": "<rule_id>", "status": "<new_status>"}` |
+| `422` | Invalid status value |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/virtual-tags/rules/rule_001/status" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"status": "inactive"}'
+```
+
+---
+
+## DELETE /api/virtual-tags/rules/{rule_id}
+
+**Auth:** `admin`
+
+Soft-deletes a rule, setting its status to `inactive`. The rule history and audit records are preserved.
+
+### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `rule_id` | Rule identifier |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Returns `{"ruleId": "<rule_id>", "status": "inactive"}` |
+| `404` | Rule not found |
+
+---
+
+## POST /api/virtual-tags/preview
+
+**Auth:** `admin`
+
+Evaluates a rule definition against the current inventory without saving it. Returns the affected-resource count, total inventory count, a resource sample, and the current monthly ActualCost for matching resources. Use this before saving a new rule to understand its impact.
+
+### Request body
+
+Pass the same rule definition object as `POST /api/virtual-tags/rules`. The rule is not persisted.
+
+### Example response
+
+```json
+{
+  "affectedCount": 47,
+  "totalCount": 1240,
+  "affectedPercent": 3.79,
+  "estimatedMonthlyCost": 12480.50,
+  "currency": "USD",
+  "sample": [
+    {
+      "resourceId": "/subscriptions/.../providers/Microsoft.Compute/virtualMachines/vm-prod-01",
+      "resourceName": "vm-prod-01",
+      "resourceGroup": "prod-rg",
+      "subscriptionName": "Production"
+    }
+  ]
+}
+```
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Preview result |
+| `422` | Invalid rule definition |
+
+---
+
+## GET /api/virtual-tags/effective
+
+**Auth:** `reader`
+
+Returns the effective virtual tag values for a single resource with precedence fully applied: manual overrides take highest precedence, followed by imported overrides, matching rules (lowest numeric priority first), and finally Azure native tags.
+
+### Query parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `resourceId` | string | ✅ | Full Azure resource ID to evaluate |
+
+### Example request
+
+```bash
+curl -s "https://flux.example.com/api/virtual-tags/effective?resourceId=/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/prod-rg/providers/Microsoft.Compute/virtualMachines/vm-api-01" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Example response
+
+```json
+{
+  "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/prod-rg/providers/Microsoft.Compute/virtualMachines/vm-api-01",
+  "tags": {
+    "CostCenter": {
+      "value": "Platform",
+      "source": "rule",
+      "ruleId": "rule_001",
+      "priority": 10
+    },
+    "Environment": {
+      "value": "Production",
+      "source": "native_tag"
+    },
+    "BusinessRegion": {
+      "value": "EMEA",
+      "source": "imported_override"
+    }
+  }
+}
+```
+
+---
+
+## POST /api/virtual-tags/overrides/import
+
+**Auth:** `admin`
+
+Bulk-imports resource-specific tag overrides. Overrides are the highest-precedence source below manual assignments and are commonly imported from a spreadsheet or external system. The full previous state is returned in the response so that a rollback can be performed if needed.
+
+### Request body
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `overrides` | array | ✅ | 1–20,000 items | List of override objects to import |
+
+Each override object:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `resourceId` | string | ✅ | Full Azure resource ID |
+| `dimensionKey` | string | ✅ | Target dimension key |
+| `value` | string | ✅ | Tag value to assign |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Import completed; returns result with counts and previous state for rollback |
+| `422` | Empty list or list exceeds 20,000 items |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/virtual-tags/overrides/import" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "overrides": [
+      {"resourceId": "/subscriptions/.../virtualMachines/vm-01", "dimensionKey": "CostCenter", "value": "Platform"},
+      {"resourceId": "/subscriptions/.../virtualMachines/vm-02", "dimensionKey": "CostCenter", "value": "Data"}
+    ]
+  }'
+```
+
+---
+
+## POST /api/virtual-tags/overrides/rollback
+
+**Auth:** `admin`
+
+Rolls back a previous import by restoring the prior state. Pass the `previous` array returned by the import response. Uses optimistic concurrency — the rollback fails if the current state no longer matches what was captured.
+
+### Request body
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `previous` | array | ✅ | 1–20,000 items | The `previous` array from the import response |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Rollback completed; returns affected row counts |
+| `422` | Empty list or list exceeds 20,000 items |
+
+---
+
+## GET /api/reports/virtual-tags
+
+**Auth:** `reader`
+
+Returns the virtual tag showback report for a dimension and optional value filter. The report includes cost totals by value, a classified/unclassified breakdown, monthly cost history, and per-resource cost with assignment provenance. Historical charge rows are evaluated through the current effective tag set; this is current-state reclassification, not point-in-time reconstruction.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `dimension` | string | `` | Dimension key to report on |
+| `value` | string | `` | Filter to a single tag value within the dimension |
+| `costType` | string | `AmortizedCost` | `AmortizedCost` or `ActualCost` |
+| `startDate` | string | | ISO 8601 date — inclusive start |
+| `endDate` | string | | ISO 8601 date — inclusive end |
+
+### Example request
+
+```bash
+curl -s "https://flux.example.com/api/reports/virtual-tags?dimension=CostCenter&costType=AmortizedCost&startDate=2025-06-01&endDate=2025-06-30" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Example response (truncated)
+
+```json
+{
+  "dimension": "CostCenter",
+  "costType": "AmortizedCost",
+  "currency": "USD",
+  "period": {"start": "2025-06-01", "end": "2025-06-30"},
+  "summary": {
+    "classified": 148320.50,
+    "unclassified": 4210.00,
+    "total": 152530.50
+  },
+  "byValue": [
+    {"value": "Platform", "cost": 87400.00},
+    {"value": "Data", "cost": 60920.50}
+  ],
+  "history": [
+    {"month": "2025-04", "classified": 139000.00, "unclassified": 5000.00},
+    {"month": "2025-05", "classified": 144200.00, "unclassified": 4600.00},
+    {"month": "2025-06", "classified": 148320.50, "unclassified": 4210.00}
+  ],
+  "resources": [
+    {
+      "resourceId": "/subscriptions/.../virtualMachines/vm-api-01",
+      "name": "vm-api-01",
+      "value": "Platform",
+      "subscriptionName": "Production",
+      "resourceGroup": "prod-rg",
+      "resourceType": "Microsoft.Compute/virtualMachines",
+      "source": "rule",
+      "cost": 1240.00
+    }
+  ]
+}
+```
+
+---
+
+## GET /api/reports/virtual-tags/export
+
+**Auth:** `reader`
+
+Streams the virtual tag showback report as a CSV download. Accepts the same query parameters as `GET /api/reports/virtual-tags`.
+
+The CSV columns are: `dimension`, `value`, `resource_id`, `resource_name`, `subscription`, `resource_group`, `resource_type`, `source`, `cost`, `currency`, `cost_type`.
+
+### Query parameters
+
+Same as `GET /api/reports/virtual-tags`: `dimension`, `value`, `costType`, `startDate`, `endDate`.
+
+```bash
+curl -s -o flux-virtual-tags.csv \
+  "https://flux.example.com/api/reports/virtual-tags/export?dimension=CostCenter&costType=AmortizedCost" \
+  -H "Authorization: Bearer $TOKEN"
+```

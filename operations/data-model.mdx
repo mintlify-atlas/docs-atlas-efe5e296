@@ -1,0 +1,142 @@
+---
+title: "Flux Data Model: DuckDB Tables and Schema"
+sidebarTitle: "Data Model"
+description: "Reference guide to every DuckDB table Flux manages, organized by domain: inventory snapshots, cost data, anomalies, opportunities, telemetry, intelligence, and operational state."
+---
+
+Flux stores all data in a single DuckDB file located at `FLUX_DUCKDB_PATH` (default `data/flux.duckdb`). The schema is designed to be append-only — collections add rows and materialized "current" tables present the latest state for each resource or scope. Nothing is overwritten on collection; historical snapshots accumulate alongside current views.
+
+## Design principles
+
+- **Snapshot, don't overwrite.** Every successful collection appends rows to a `*_snapshots` table. A corresponding `*_current` table (or view) presents the newest record per resource ID or scope, so resources absent from a later collection do not silently persist as current.
+- **Four hot tables use `CREATE OR REPLACE`.** The highest-read projections — `resources_current`, `costs_current`, `commitment_costs_current`, and `policy_posture_current` — are rebuilt as full replacement tables after each snapshot write and on startup. This provides O(1) lookup without recomputing `arg_max` window functions on every API read.
+- **Exact-pinned DuckDB version.** DuckDB is pinned to `1.4.5` in `requirements.txt`. A floating version range caused five corruption incidents in five days when different engine builds wrote and checkpointed the same on-disk file. Do not relax this pin.
+- **All writes serialized through one worker.** The singleton sync worker holds the DuckDB writer lock. Multiple concurrent writers are not safe — read-only API queries must acquire the cross-process read lease, and the web process returns `503 Retry-After` rather than hanging when the writer holds the lock.
+
+---
+
+### Configuration and sync
+
+| Table | Description |
+|---|---|
+| `azure_integration` | One active Azure provider configuration: tenant, subscriptions, provider type, and managed-identity settings. |
+| `sync_runs` | Synchronization request state and history. Records are written on enqueue and updated through `running` → `complete` / `failed`. |
+| `sync_source_runs` | Per-request, per-source, and per-subscription/scope attempts. Records row counts, retry attempts, and last-good retention status. The worker's checkpoint table — recovery reads this to skip completed scopes. |
+| `source_sync_state` | Successful collection markers per source and scope. Advances only when a scope fully completes, so a failed or partial run never replaces the previous good result. |
+
+---
+
+### Inventory
+
+| Table | Description |
+|---|---|
+| `resource_snapshots` | Append-only inventory and enrichment observations from Azure Resource Graph. Key fields: normalized resource ID, subscription, resource group, resource type, region, name, tags, raw ARG JSON, and nullable enrichment fields (cost, utilization, opportunity kind/reason/savings). |
+| `resources_current` | `CREATE OR REPLACE TABLE` rebuilt after each snapshot write. Presents the newest complete ARG snapshot per Azure resource ID. Resources absent from the latest collection are not retained as current. |
+| `policy_posture_snapshots` | Assignment-level Azure Policy state summaries from ARG, appended per sync. |
+| `policy_posture_current` | `CREATE OR REPLACE TABLE` presenting the latest Policy posture per assignment scope. |
+
+---
+
+### Cost
+
+| Table | Description |
+|---|---|
+| `cost_snapshots` | Append-only actual and amortized month-to-date resource costs from the Cost Management Query API, one record per resource per subscription per cost type per sync. |
+| `costs_current` | `CREATE OR REPLACE TABLE` presenting the latest MTD cost per resource and cost type. Retained independently for each successfully queried subscription — a throttled subscription retains its previous good cost view. |
+| `daily_cost_history` | Checkpointed actual and amortized daily cost grouped by resource ID and service name. First collection backfills 90 days; later runs replace only a 14-day rolling window. Includes collection lineage. |
+| `cost_history_runs` | Durable daily-history job completion, failure, and retry-priority state per subscription and cost type. |
+| `cost_history_scope_runs` | Per-scope completion and last-good status for the daily-history collector. |
+| `cost_details_backfill_scopes` | Per-subscription, cost-type, and calendar-month checkpoints for the asynchronous Cost Details fallback. Activated when the Query API persistently fails for a scope. |
+| `focus_import_runs` | Idempotent FOCUS v1.0 ingestion job records, one per manifest import attempt. |
+| `focus_export_manifests` | Import provenance for each discovered FOCUS export manifest blob. |
+| `focus_cost_charges` | FOCUS v1.0 charge-level ledger: lineage, coverage, pricing model, commitment, resource, and raw source evidence. Current FOCUS dates take precedence over Query API rows for the same period. |
+| `commitment_cost_snapshots` | Actual month-to-date usage cost grouped by Meter ID and Pricing Model (`On-demand`, `Reservation`, `SavingsPlan`). Used for the directional commitment cost-mix dashboard. |
+| `commitment_costs_current` | `CREATE OR REPLACE TABLE` presenting the latest commitment cost mix per meter and pricing model. |
+| `retail_price_snapshots` | Append-only Azure Retail Prices attempts per region, SKU, OS/license profile, and currency. |
+| `retail_prices_current` | Last-good, unambiguous VM target rates keyed by region, SKU, OS/license profile, and currency. Spot, Low Priority, tiered, and ambiguous multi-rate matches are excluded. |
+
+---
+
+### Cost anomalies
+
+| Table | Description |
+|---|---|
+| `cost_anomaly_runs` | Method-versioned anomaly evaluation job records per subscription/scope, including evaluation date, method version, and warm-up status. |
+| `cost_anomaly_snapshots` | Per-scope, per-service, and per-resource anomaly evaluations. Only anomalous findings and compact warming-up scopes are retained — normal results are not materialized. |
+| `cost_anomalies_current` | The current set of active anomaly findings, with baseline evidence and seasonal method lineage. |
+| `cost_anomaly_reviews` | Administrator investigation state and notes, keyed to immutable anomaly evidence records. |
+
+---
+
+### Opportunities and valuation
+
+| Table | Description |
+|---|---|
+| `advisor_recommendation_snapshots` | The complete set of active Advisor Cost and Performance recommendations per sync, semantically de-duplicated by scope, resource, recommendation type, action, and target context. |
+| `advisor_recommendations_current` | The latest complete active Advisor recommendation set. |
+| `rule_opportunity_snapshots` | Versioned multi-finding Flux Signals rule observations with evidence JSON and confidence. |
+| `rule_opportunities_current` | The latest Flux Signals findings per resource. |
+| `opportunity_confidence_snapshots` | Reproducible heuristic confidence scores built from persistence, corroboration, evidence freshness, and telemetry coverage. Method-versioned. |
+| `opportunity_confidence_current` | The latest confidence score per opportunity. |
+| `opportunity_valuation_snapshots` | Method-versioned gross and risk-adjusted monthly opportunity values with current Cost Management run rate, target retail meter, Advisor fallback, and calculation lineage. |
+| `opportunity_valuation_current` | The latest valuation per opportunity. |
+
+---
+
+### Inventory drift
+
+| Table | Description |
+|---|---|
+| `inventory_drift_runs` | Per-sync drift evaluation job records, including the snapshot pair evaluated and scope-level baseline state. |
+| `inventory_changes` | Exact consecutive-snapshot diffs: creates, deletes, resizes, retiers, retags, moves, and reconfigurations, each with governed fingerprint evidence. |
+| `inventory_change_anomalies` | Scope-level median/MAD change-volume baselines and anomaly findings. A scope is `warming_up` until it has at least `FLUX_DRIFT_MIN_BASELINE_POINTS` completed drift intervals. |
+
+---
+
+### Telemetry and right-sizing
+
+| Table | Description |
+|---|---|
+| `rightsizing_recommendation_snapshots` | Per-telemetry-run VM coverage status, governed utilization evidence (CPU, memory, network), candidate action (`idle` / `resize` / `review`), and savings lineage. |
+| `rightsizing_recommendations_current` | The latest right-sizing recommendation per VM, including explicit coverage state (`no-data`, `warming-up`, `partial`, `conflicting`, `actionable`). |
+| `telemetry_metric_samples` | Deduplicated incremental LogicMonitor CPU, memory, disk, and network observations. Rolling 30-day retention of raw samples. |
+| `telemetry_collection_checkpoints` | Per-LogicMonitor-device collection progress. Later runs resume without re-reading long history. Records the last collected timestamp per device and datasource. |
+
+---
+
+### Intelligence
+
+| Table | Description |
+|---|---|
+| `intelligence_usage_events` | 30-day request timing, token counts, estimated cost, tool calls, errors, user feedback, and browser end-to-end telemetry for every Ask Flux request. |
+| `intelligence_transcript_events` | 30-day administrator-reviewable prompts, validated replies, context, and raw final responses. Model reasoning traces are excluded. Set `FLUX_AI_TRANSCRIPT_RETENTION_DAYS=0` to disable transcript storage. |
+
+---
+
+### FinOps Toolkit
+
+| Tables | Description |
+|---|---|
+| `finops_toolkit_*` | Checksum-pinned Microsoft FinOps Toolkit v14 reference data: meter-to-service mappings, pricing model eligibility, Hybrid Benefit eligibility references, and import provenance. The checksum pin prevents silent upstream drift. |
+
+---
+
+### Virtual tags
+
+| Table | Description |
+|---|---|
+| `virtual_tag_dimensions` | Registered business dimensions (e.g. `BusinessRegion`, `CostCenter`, `Application`). Each dimension has a unique key and display name. |
+| `virtual_tag_rules` | Effective-dated, prioritized include and exclude assignment rules. Each rule carries a version, audit trail, condition JSON, `effectiveFrom`/`effectiveTo`, priority, status (`active`/`inactive`), and effect (`include`/`exclude`). |
+| `virtual_tag_overrides` | Resource-specific manual and imported overrides. Each record carries the resource ID, tag key, tag value, and source (`manual` or `imported`). |
+
+---
+
+## Notes
+
+<Note>
+Interactive API documentation covering all endpoints and response schemas is available at `/docs` (FastAPI Swagger UI).
+</Note>
+
+<Warning>
+The DuckDB file must not be opened by multiple writers simultaneously. All writes are serialized through the singleton sync worker. The web process acquires a cross-process read lease; API requests return `503 Retry-After` rather than hanging when the writer holds the lock.
+</Warning>

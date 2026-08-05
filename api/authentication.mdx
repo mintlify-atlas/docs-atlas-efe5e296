@@ -1,0 +1,171 @@
+---
+title: "Flux API Authentication and Authorization"
+sidebarTitle: "Authentication"
+description: "Flux authenticates users via Microsoft Entra Easy Auth in production and uses a mock admin in development. Role-based authorization separates reader and admin access at the route level."
+---
+
+Flux uses two **completely independent** identity flows that are never mixed. Users authenticate with **Microsoft Entra ID** — App Service Easy Auth validates the token and Flux maps the injected claims to application roles. Separately, Flux itself authenticates to **Azure Resource Manager** using a **managed identity** to query ARG, Advisor, and Cost Management without a client secret. This page covers the user-facing authentication model only; for Azure managed-identity configuration see the deployment guide.
+
+---
+
+## Authentication Modes
+
+The `FLUX_AUTH_MODE` environment variable selects the active mode. The default in development is `mock`.
+
+| Mode | Behavior | When to use |
+|---|---|---|
+| `mock` | All requests are authenticated as a mock administrator — no Entra configuration is needed. The display name and email can be customized. | Local development and automated testing |
+| `entra` | App Service Easy Auth validates the Entra token and injects Base64-encoded claims in the `X-MS-CLIENT-PRINCIPAL` header. Flux decodes the header, validates the tenant, and maps role or group claims to `reader` / `admin`. | Production on Azure App Service |
+| `none` | No authentication — all requests pass through as unauthenticated. | Isolated integration tests only |
+
+<Warning>
+**Never use `FLUX_AUTH_MODE=none` in a network-reachable environment.** It disables all access controls. Similarly, `FLUX_AUTH_MODE=entra` must only be set behind correctly configured App Service Authentication. The application trusts the `X-MS-CLIENT-PRINCIPAL` header unconditionally and cannot distinguish a genuine header from a manually crafted one unless Easy Auth is enforcing authentication upstream.
+</Warning>
+
+---
+
+## How Entra Mode Works
+
+When `FLUX_AUTH_MODE=entra` is active, Flux resolves every request's identity through the following steps:
+
+<Steps>
+  <Step title="Easy Auth validates the token">
+    App Service Authentication intercepts the request, validates the Microsoft Entra bearer token, and injects the authenticated principal's claims into the `X-MS-CLIENT-PRINCIPAL` request header as a Base64-encoded JSON payload.
+  </Step>
+  <Step title="Flux decodes the header">
+    `AuthService` Base64-decodes and JSON-parses the `X-MS-CLIENT-PRINCIPAL` value. If the header is absent (for example, a direct request that bypassed Easy Auth on a misconfigured route), the session is treated as unauthenticated.
+  </Step>
+  <Step title="Claims are normalised">
+    Individual claim types (`typ`) and values (`val`) from the payload's `claims` array are lowercased and collected into a dictionary. Role and group claims — including both short-form (`roles`, `groups`) and full WS-Federation URN claim types — are unioned into the set of effective assignments.
+  </Step>
+  <Step title="Tenant boundary is enforced">
+    If `FLUX_ENTRA_TENANT_ID` is set, Flux compares the `tid` claim value against it. A mismatch returns `403 Forbidden` with the message _"The signed-in user belongs to a different Microsoft Entra tenant."_
+  </Step>
+  <Step title="Roles are mapped">
+    The set of effective assignments is intersected against `FLUX_ENTRA_ADMIN_ASSIGNMENTS` and `FLUX_ENTRA_READER_ASSIGNMENTS`. An admin match grants `["admin", "reader"]`; a reader-only match grants `["reader"]`; no match leaves the roles list empty (authenticated but no permissions).
+  </Step>
+  <Step title="Session is returned">
+    A structured session object is returned from `GET /api/session`. It includes the resolved user identity, role list, permission flags, and data-currency metadata.
+  </Step>
+</Steps>
+
+---
+
+## Authorization Roles
+
+Flux has two application roles. Admins implicitly hold all reader permissions.
+
+| Role | App-role value | Access |
+|---|---|---|
+| `reader` | `Flux.Reader` | Overview dashboard, inventory, changes, cost anomalies, reports, evidence packs, right-sizing recommendations, opportunities, explore (semantic layer and expert SQL), intelligence chat and feedback, telemetry status |
+| `admin` | `Flux.Admin` | All reader access, plus Azure integration configuration and synchronization, budget and allocation settings, virtual tag management, right-sizing board administration, opportunity lifecycle management, intelligence review, operations health, SLO status, AI configuration, job triggering, audit log, remediation package |
+
+---
+
+## Route-Level Authorization
+
+Flux enforces authorization using two FastAPI dependency functions injected at the route level:
+
+**`require_reader`** — applied to all `GET` endpoints except `/api/health` and `/api/session`. Raises `401 Unauthorized` if the session is not authenticated, or `403 Forbidden` if the session lacks `reader` or `admin` role.
+
+**`require_admin`** — applied to all `PUT`, `POST`, and `DELETE` endpoints that modify integration configuration, planning boards, budgets, virtual tags, and similar admin-only resources. Calls `require_reader` first, then additionally raises `403 Forbidden` if the session lacks `admin` role with the message _"Flux.Admin access is required to manage Azure integrations."_
+
+Both dependencies return the full session dictionary so that route handlers can extract the acting user's identity for audit attribution.
+
+<Tip>
+`/api/health` and `/api/session` are the only endpoints that never call `require_reader`. Health is used by deployment probes; session is called by the shell before any role is known.
+</Tip>
+
+---
+
+## GET /api/session Response
+
+Call `GET /api/session` to inspect the resolved identity, permissions, and data currency for the current request. The shell calls this on load to gate navigation items and display the signed-in user.
+
+```json
+{
+  "authenticated": true,
+  "authMode": "entra",
+  "user": {
+    "id": "00000000-0000-0000-0000-000000000001",
+    "displayName": "Ada Lovelace",
+    "email": "ada@contoso.com",
+    "tenantId": "aaaabbbb-0000-cccc-1111-dddd2222eeee",
+    "roles": ["admin", "reader"],
+    "claimsSource": "app_service"
+  },
+  "permissions": {
+    "canRead": true,
+    "canManageIntegrations": true,
+    "canSyncIntegrations": true
+  },
+  "authActions": {
+    "loginPath": "/.auth/login/aad",
+    "logoutPath": "/.auth/logout?post_logout_redirect_uri=/"
+  },
+  "dataCurrency": {
+    "mode": "direct",
+    "snapshotVersion": null,
+    "latestVersion": null,
+    "generatedAt": null
+  }
+}
+```
+
+In mock mode, `claimsSource` is `"mock"`, `tenantId` is `"local"`, and `user.id` is `"local-admin"`. When the user is not authenticated, `authenticated` is `false` and `user` is `null`.
+
+---
+
+## Group ID Mappings
+
+`FLUX_ENTRA_ADMIN_ASSIGNMENTS` and `FLUX_ENTRA_READER_ASSIGNMENTS` each accept a **comma-separated list** of values. Each value can be either:
+
+- An **app-role value** such as `Flux.Admin` or `Flux.Reader` — matched against the `roles` claim injected by Entra app-role assignments.
+- An **Entra group object ID** (GUID) — matched against the `groups` claim injected by a group-claims configuration. Use this when direct app-role assignment is not available.
+
+```text
+# App-role values (default)
+FLUX_ENTRA_ADMIN_ASSIGNMENTS=Flux.Admin
+FLUX_ENTRA_READER_ASSIGNMENTS=Flux.Reader
+
+# Group object IDs
+FLUX_ENTRA_ADMIN_ASSIGNMENTS=11111111-aaaa-2222-bbbb-333333333333
+FLUX_ENTRA_READER_ASSIGNMENTS=44444444-cccc-5555-dddd-666666666666
+
+# Mixed (any match grants the role)
+FLUX_ENTRA_ADMIN_ASSIGNMENTS=Flux.Admin,11111111-aaaa-2222-bbbb-333333333333
+```
+
+Matching is **case-insensitive** — all incoming claim values are lowercased before comparison.
+
+---
+
+## Environment Variables
+
+The following environment variables control authentication. Copy them from `.env.example` into your deployment settings.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_AUTH_MODE` | `mock` | Authentication mode: `mock`, `entra`, or `none` |
+| `FLUX_ENTRA_TENANT_ID` | _(empty)_ | Required tenant boundary when `FLUX_AUTH_MODE=entra`. Requests from a different tenant are rejected with `403`. |
+| `FLUX_ENTRA_ADMIN_ASSIGNMENTS` | `Flux.Admin` | Comma-separated app-role values or group object IDs that grant admin access |
+| `FLUX_ENTRA_READER_ASSIGNMENTS` | `Flux.Reader` | Comma-separated app-role values or group object IDs that grant reader access |
+| `FLUX_AUTH_LOGIN_PATH` | `/.auth/login/aad` | App Service sign-in redirect path used by the frontend |
+| `FLUX_AUTH_LOGOUT_PATH` | `/.auth/logout` | App Service sign-out redirect path used by the frontend |
+
+---
+
+## Local Development
+
+With `FLUX_AUTH_MODE=mock` (the default), every API request is automatically resolved as a mock administrator. No Entra app registration, tenant configuration, or token is required.
+
+```powershell
+# .env or environment
+FLUX_AUTH_MODE=mock
+```
+
+The mock session uses the display name and email configured in settings (defaulting to `"Local Admin"`). Both `canRead` and `canManageIntegrations` are `true`, so all endpoints are accessible.
+
+<Note>
+When running the Vite development server (`npm run dev`), all `/api` requests are proxied to `http://127.0.0.1:8765`. The mock session is resolved by the FastAPI backend on every proxied request — the frontend does not handle authentication directly.
+</Note>

@@ -1,0 +1,260 @@
+---
+title: "Flux Configuration Reference: All Environment Variables"
+sidebarTitle: "Configuration"
+description: "Complete reference for every FLUX_ environment variable. Covers server, DuckDB, Azure sync, Cost Management, anomaly detection, right-sizing thresholds, telemetry, AI, and authentication settings."
+---
+
+Flux is configured entirely through environment variables. For local development, copy `.env.example` to `.env` (or export variables in your shell) and edit as needed. For production on Azure App Service, set variables as **Application Settings** — values are injected as environment variables at startup and never need to be committed to source control.
+
+```powershell
+# Copy the example file to get started
+Copy-Item .env.example .env
+```
+
+Sections below group every variable by concern. Each table lists the variable name, its compiled-in default (from `api/config.py`), and its purpose.
+
+<Tip>
+  In production, set `FLUX_DEEPSEEK_API_KEY`, `FLUX_OPENROUTER_API_KEY`, `FLUX_FOUNDRY_API_KEY`, and `LM_BEARER_TOKEN` as **Key Vault references** in App Service Application Settings rather than plain-text values. Credentials stored as Key Vault references are resolved at runtime and never appear in logs or the App Service portal.
+</Tip>
+
+---
+
+### Server
+
+Core process and filesystem settings. These rarely need to change for local development.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_HOST` | `127.0.0.1` | API bind host. Set to `0.0.0.0` only behind a trusted reverse proxy or App Service. |
+| `FLUX_PORT` | `8765` | API and built-frontend port. App Service also respects the platform-injected `PORT` variable. |
+| `FLUX_DUCKDB_PATH` | `data/flux.duckdb` | Path to the primary DuckDB file. |
+| `FLUX_FRONTEND_DIST` | `frontend/dist` | Path to the built React assets served by FastAPI. |
+| `FLUX_DUCKDB_CONNECT_TIMEOUT_SECONDS` | `15` | Web-process bound on waiting for the cross-process DuckDB write lease. Requests return `503 + Retry-After` instead of hanging. Set to `-1` for unbounded. |
+| `FLUX_ANALYTICS_SNAPSHOT_MODE` | `direct` | `direct` reads the mutable database (development default); `snapshot` serves analytical reads from published immutable copies so the web process never opens the writer DB. |
+| `FLUX_ANALYTICS_SNAPSHOT_PUBLISH` | `false` | When `true`, the worker publishes a validated immutable snapshot after each data-writing job. |
+| `FLUX_SNAPSHOT_STORAGE_ACCOUNT_URL` | _(empty)_ | Blob service URL for snapshot storage in production. Empty uses the local directory. |
+| `FLUX_SNAPSHOT_CONTAINER` | `flux-analytics-snapshots` | Blob container for published analytical snapshots. |
+| `FLUX_SNAPSHOT_LOCAL_DIRECTORY` | `data/snapshots` | Local directory for published snapshots when no Blob account is configured. |
+| `FLUX_SNAPSHOT_CACHE_DIRECTORY` | `data/snapshot-cache` | Per-API-instance cache for downloaded snapshots. Prefer instance-local storage (e.g. `/tmp`) over the shared `/home` mount. |
+| `FLUX_ANALYTICS_SNAPSHOT_REFRESH_SECONDS` | `60` | How often the web process checks for a newer published snapshot. |
+| `FLUX_ANALYTICS_SNAPSHOT_RETENTION` | `5` | Number of newest snapshot versions to retain. |
+| `FLUX_ANALYTICS_SNAPSHOT_MIN_INTERVAL_SECONDS` | `600` | Minimum gap between publication bursts. Set to `0` to disable coalescing. |
+| `FLUX_ANALYTICS_SNAPSHOT_DAILY_RETENTION_DAYS` | `14` | Retention for the newest snapshot per UTC day (the analytical backup tier). |
+| `FLUX_ANALYTICS_STAGING_DIRECTORY` | `data/staging` | Durable staged analytical payloads awaiting the singleton analytics writer. |
+| `FLUX_SYNC_CLAIM_LEASE_SECONDS` | `900` | Crashed-worker sync claims become reclaimable after this lease lapses. |
+| `FLUX_OPERATIONAL_POOL_TIMEOUT_SECONDS` | `30` | Bounded wait for a pooled operational connection before failing loudly. |
+| `FLUX_DEV_SEED` | `false` | Seed demonstration data into an empty database on startup. |
+
+---
+
+### Azure Connection
+
+Controls how Flux authenticates to Azure for Resource Graph, Advisor, and Cost Management queries.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_AZURE_PROVIDER` | `local_powershell` | Identity provider for Azure access. Use `local_powershell` for development (current `Connect-AzAccount` session) or `managed_identity` for App Service. |
+| `FLUX_AZURE_POWERSHELL` | `pwsh` | PowerShell executable name used by the local provider. |
+| `FLUX_AZURE_TIMEOUT_SECONDS` | `180` | Per-request timeout for Azure Resource Graph sync operations. |
+| `FLUX_AZURE_MANAGEMENT_ENDPOINT` | `https://management.azure.com` | Azure Resource Manager endpoint and token scope. Change only for sovereign clouds. |
+| `FLUX_MANAGED_IDENTITY_CLIENT_ID` | _(empty)_ | Client ID of a user-assigned managed identity. Leave empty to use the system-assigned identity. Also read from `AZURE_CLIENT_ID` as a fallback. |
+
+---
+
+### Cost Management
+
+Controls the independently scheduled actual and amortized cost collectors, including retry behavior and QPU-aware pacing.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_COST_MANAGEMENT_ENABLED` | `true` | Enable the Cost Management actual/amortized collectors. |
+| `FLUX_COST_MANAGEMENT_API_VERSION` | `2025-03-01` | Cost Management Query and Generate Cost Details API version. |
+| `FLUX_COST_MANAGEMENT_TIMEOUT_SECONDS` | `120` | Per-request timeout for each cost API call. |
+| `FLUX_COST_MANAGEMENT_MAX_RETRIES` | `5` | Retry count for throttled or unavailable cost requests. |
+| `FLUX_COST_MANAGEMENT_REQUEST_DELAY_SECONDS` | `20` | Conservative base interval for shared, QPU-weighted pacing across cost jobs. |
+| `FLUX_COST_MANAGEMENT_CLIENT_TYPE` | `FluxFinOps` | Stable Cost Management client classification sent with every query. |
+| `FLUX_COST_MANAGEMENT_THROTTLE_COOLDOWN_SECONDS` | `30` | Additional pause after a persistent Cost Management `429` before the next scope. |
+| `FLUX_COST_MANAGEMENT_QPU_BUDGET_10_SECONDS` | `6` | QPU budget ceiling over a 10-second window (50% of the published Microsoft quota). |
+| `FLUX_COST_MANAGEMENT_QPU_BUDGET_60_SECONDS` | `30` | QPU budget ceiling over a 60-second window. |
+| `FLUX_COST_MANAGEMENT_QPU_BUDGET_3600_SECONDS` | `300` | QPU budget ceiling over a 3600-second window. |
+| `FLUX_COST_HISTORY_INITIAL_DAYS` | `90` | One-time daily cost backfill window for a new subscription/cost type. |
+| `FLUX_COST_HISTORY_REFRESH_DAYS` | `14` | Rolling daily cost window refreshed after the first successful collection. |
+| `FLUX_COST_HISTORY_CHUNK_DAYS` | `14` | Maximum inclusive date span committed per daily-history transaction. |
+| `FLUX_COST_DETAILS_BACKFILL_ENABLED` | `true` | Use asynchronous Cost Details reports when a daily Query API scope fails. |
+| `FLUX_COST_DETAILS_MAX_REPORTS_PER_RUN` | `4` | Maximum monthly fallback reports generated by one daily job. |
+| `FLUX_COST_DETAILS_POLL_INTERVAL_SECONDS` | `20` | Default operation polling interval when Azure omits `Retry-After`. |
+| `FLUX_COST_DETAILS_MAX_POLL_ATTEMPTS` | `30` | Maximum polls for one asynchronous report before giving up. |
+| `FLUX_COST_DETAILS_CURRENT_REFRESH_DAYS` | `7` | Refresh cadence for a current-month fallback checkpoint. |
+| `FLUX_COST_COVERAGE_REQUEUE_MONTHS` | `3` | Months back to re-evaluate for coverage gaps at queue time. |
+
+---
+
+### FOCUS Cost Export
+
+Controls ingestion of FOCUS v1.0 cost exports from Azure Blob Storage, used for CSP subscriptions and governed charge-level investigation.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_FOCUS_COST_ENABLED` | `true` | Enable the independent FOCUS cost-export ingestion worker. |
+| `FLUX_FOCUS_COST_REQUIRED` | `false` | When `true`, treat missing FOCUS data as a blocking coverage error. |
+| `FLUX_FOCUS_STORAGE_ACCOUNT_URL` | _(empty)_ | Cost-export storage account Blob service URL (e.g. `https://<account>.blob.core.windows.net`). |
+| `FLUX_FOCUS_STORAGE_CONTAINER` | `cost-management` | Blob container that holds FOCUS exports. |
+| `FLUX_FOCUS_STORAGE_PREFIX` | `focus/` | Blob prefix scanned for manifests. |
+| `FLUX_FOCUS_LOCAL_PATH` | _(unset)_ | Optional local root directory for governed local FOCUS backfill. |
+| `FLUX_PRICESHEET_STORAGE_PREFIX` | `pricesheet/` | Blob prefix for price sheet exports within the same storage container. |
+| `FLUX_FOCUS_MAX_MANIFESTS_PER_RUN` | `16` | Bound on new manifests imported by one worker run. |
+
+---
+
+### Cost Anomaly Detection
+
+Tunable parameters for the matching-weekday median/MAD seasonal anomaly model. Increase history and baseline thresholds for more conservative detection.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_COST_ANOMALY_LATENCY_DAYS` | `2` | Newest billed days excluded from anomaly evaluation to avoid unfinalized billing data. |
+| `FLUX_COST_ANOMALY_MINIMUM_HISTORY_DAYS` | `28` | Required age of a cost scope before anomaly classification begins. |
+| `FLUX_COST_ANOMALY_MINIMUM_BASELINE_POINTS` | `4` | Required matching-weekday observations before a scope is evaluated. |
+| `FLUX_COST_ANOMALY_BASELINE_WEEKS` | `8` | Maximum prior matching weekdays included in the seasonal baseline. |
+| `FLUX_COST_ANOMALY_THRESHOLD_K` | `3.5` | Robust median/MAD score required to classify an anomaly. |
+| `FLUX_COST_ANOMALY_MINIMUM_INCREASE` | `10` | Minimum daily absolute spend increase (in the row currency) required for an anomaly. |
+
+---
+
+### Synchronization Worker
+
+Controls the durable sync queue consumer that serializes all DuckDB writes.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_SYNC_WORKER_MODE` | `embedded` (local) / `external` (App Service) | `embedded` runs the consumer loop in-process; `external` expects a singleton continuous WebJob to consume the queue. Auto-detected from `WEBSITE_SITE_NAME`. |
+| `FLUX_SYNC_WORKER_POLL_SECONDS` | `5` | Queue polling interval for the durable sync worker. |
+
+---
+
+### Inventory Drift
+
+Parameters for the consecutive-snapshot diff engine and its scope-level change-volume anomaly baselines.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_DRIFT_MIN_BASELINE_POINTS` | `5` | Completed drift intervals required before anomaly classification is enabled for a scope. |
+| `FLUX_DRIFT_MAD_THRESHOLD` | `3` | Median absolute deviation threshold for flagging unusual change volume. |
+
+---
+
+### Right-Sizing
+
+Thresholds that govern how Flux classifies VM candidates as idle or review-eligible. All CPU, memory, and network thresholds are applied to governed telemetry evidence.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_RIGHTSIZING_MIN_WINDOW_DAYS` | `14` | Required governed telemetry evidence window before a candidate is classified. |
+| `FLUX_RIGHTSIZING_MIN_COVERAGE_PERCENT` | `70` | Minimum CPU sample coverage percentage required for classification. |
+| `FLUX_RIGHTSIZING_IDLE_CPU_P95` | `5` | Maximum CPU p95 (%) for an idle candidate. |
+| `FLUX_RIGHTSIZING_IDLE_CPU_MAXIMUM` | `20` | Peak CPU guardrail that protects periodic workloads from idle classification. |
+| `FLUX_RIGHTSIZING_IDLE_NETWORK_P95_BYTES` | `52428800` | Maximum hourly p95 network throughput (bytes, per direction) for an idle candidate. |
+| `FLUX_RIGHTSIZING_REVIEW_CPU_P95` | `30` | CPU p95 headroom threshold for Advisor-corroborated resize candidates. |
+| `FLUX_RIGHTSIZING_MEMORY_REVIEW_PERCENT` | `80` | Memory p95 guardrail (%) that blocks an automatic resize action and requires review. |
+| `FLUX_RIGHTSIZING_CPU_DISAGREEMENT_PERCENT` | `20` | Maximum CPU p95 difference between independent sources before review is required. |
+
+---
+
+### Telemetry / LogicMonitor
+
+Settings for the LogicMonitor incremental metric collector and Azure Monitor bootstrap integration. LogicMonitor collection runs in rotating, checkpointed 30-minute batches.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_TELEMETRY_BOOTSTRAP_ROOT` | `data/telemetry-bootstrap` (local) / `/home/data/telemetry-bootstrap` (App Service) | Root directory containing `logicmonitor` and `azure-monitor` historical extracts for bootstrap ingestion. |
+| `FLUX_LOGICMONITOR_ACCOUNT` | _(empty)_ | LogicMonitor account subdomain (e.g. `mycompany` for `mycompany.logicmonitor.com`). |
+| `FLUX_LOGICMONITOR_GROUP_IDS` | `4,5` | Comma-separated Linux and Windows device group IDs used for discovery. |
+| `FLUX_LOGICMONITOR_REQUEST_DELAY_MS` | `250` | Minimum spacing (ms) before LogicMonitor API requests to avoid rate limiting. |
+| `FLUX_LOGICMONITOR_METRIC_BATCH_SIZE` | `12` | Least-recently-checkpointed matched devices processed per half-hour run. |
+| `FLUX_LOGICMONITOR_INITIAL_WINDOW_HOURS` | `8` | First incremental collection window (hours) for a newly matched device. |
+| `FLUX_LOGICMONITOR_MAXIMUM_WINDOW_HOURS` | `12` | Maximum catch-up window advanced by a single run (hours). |
+| `FLUX_LOGICMONITOR_METRIC_HISTORY_DAYS` | `14` | Rolling governed summary window for LogicMonitor metrics. |
+| `FLUX_LOGICMONITOR_METRIC_RETENTION_DAYS` | `16` | Raw incremental sample retention (days) before pruning. |
+| `FLUX_LOGICMONITOR_MAXIMUM_INSTANCES` | `8` | Per-datasource instance bound for disk and network metric collection. |
+| `LM_BEARER_TOKEN` | _(empty)_ | LogicMonitor bearer token. In production, resolve from Key Vault. |
+| `FLUX_AZURE_MONITOR_DAYS` | `14` | Rolling window (days) for Azure Monitor platform metric collection. |
+| `FLUX_AZURE_MONITOR_BATCH_SIZE` | `200` | Number of VMs processed per Azure Monitor batch. |
+| `FLUX_AMA_LOG_ANALYTICS_WORKSPACE_ID` | _(empty)_ | Log Analytics workspace GUID for AMA/DCR guest memory telemetry. Empty disables guest-memory collection. |
+| `FLUX_AMA_TELEMETRY_DAYS` | `14` | Rolling window (days) for AMA guest telemetry. |
+
+---
+
+### Flux Intelligence / AI
+
+Settings for the Ask Flux conversational assistant. The assistant is disabled by default and requires an external AI provider credential.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_INTELLIGENCE_AI_ENABLED` | `false` | Enable the Ask Flux assistant API. Must be `true` for the Intelligence workspace to function. |
+| `FLUX_AI_PROVIDER` | `deepseek` | Provider adapter selection: `deepseek`, `openrouter`, or `foundry`. |
+| `FLUX_INTELLIGENCE_SNAPSHOT_AGE_DAYS` | `30` | Age threshold (days) used by the aged-snapshot review rule. |
+| `FLUX_INTELLIGENCE_REQUIRED_TAGS` | _(empty)_ | Comma-separated required allocation tag keys. Empty retains the any-tag rule. |
+| `FLUX_INTELLIGENCE_TAG_EXCLUDED_TYPES` | _(empty)_ | Comma-separated resource types excluded from tag findings. |
+| `FLUX_FINOPS_TOOLKIT_AHB_ENABLED` | `true` | Emit review-only Windows and SQL VM Hybrid Benefit eligibility findings adapted from Microsoft FinOps Toolkit v14. |
+| `FLUX_FINOPS_TOOLKIT_CACHE_ROOT` | `data/finops-toolkit` (local) / `/home/data/finops-toolkit` (App Service) | Verified Toolkit open-data download cache directory. |
+| `FLUX_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API base URL. |
+| `FLUX_DEEPSEEK_API_KEY` | _(empty)_ | DeepSeek provider credential. Use a Key Vault reference in production. |
+| `FLUX_DEEPSEEK_CHAT_MODEL` | `deepseek-v4-flash` | Default assistant model for the DeepSeek provider. |
+| `FLUX_DEEPSEEK_BENCHMARK_MODEL` | `deepseek-v4-pro` | Deep-analysis/benchmark profile for the DeepSeek provider. |
+| `FLUX_OPENROUTER_API_KEY` | _(empty)_ | OpenRouter provider credential. Use a Key Vault reference in production. |
+| `FLUX_OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenRouter API base URL. |
+| `FLUX_OPENROUTER_CHAT_MODEL` | `google/gemini-2.5-flash-lite` | Default assistant model for the OpenRouter provider. |
+| `FLUX_OPENROUTER_BENCHMARK_MODEL` | `openai/gpt-4.1-mini` | Deep-analysis/benchmark profile for the OpenRouter provider. |
+| `FLUX_FOUNDRY_ENDPOINT` | _(empty)_ | Azure AI Foundry deployment endpoint URL. |
+| `FLUX_FOUNDRY_API_KEY` | _(empty)_ | Azure AI Foundry API key. Use a Key Vault reference in production. |
+| `FLUX_FOUNDRY_API_VERSION` | `2024-05-01-preview` | Foundry Chat Completions API version. |
+| `FLUX_FOUNDRY_CHAT_MODEL` | _(empty)_ | Default assistant model deployment name for Foundry. |
+| `FLUX_FOUNDRY_BENCHMARK_MODEL` | _(empty)_ | Deep-analysis/benchmark model deployment name for Foundry. |
+| `FLUX_FOUNDRY_ANTHROPIC_ENDPOINT` | _(empty)_ | Anthropic-Messages-API-compatible endpoint for Claude deployments on Foundry. Derived automatically from `FLUX_FOUNDRY_ENDPOINT` when left blank. |
+| `FLUX_FOUNDRY_ANTHROPIC_API_VERSION` | `2023-06-01` | Anthropic API version for Foundry Claude routes. |
+| `FLUX_AI_BUDGET_USD` | `10` | Evaluation budget (USD). Requests stop when estimated cumulative cost reaches this value. |
+| `FLUX_AI_STOP_AT_USD` | `8` | Estimated-cost threshold at which Flux stops and reports before hitting the full budget. |
+| `FLUX_AI_USAGE_RETENTION_DAYS` | `30` | Metadata-only usage and timing retention (days). |
+| `FLUX_AI_TRANSCRIPT_RETENTION_DAYS` | `30` | Prompt and reply administrator-review retention (days). Set to `0` to disable transcript storage. |
+| `FLUX_AI_SLOW_REQUEST_MS` | `20000` | End-to-end latency threshold (ms) used by Intelligence quality diagnostics. |
+| `FLUX_AI_MAX_TOOL_CALLS` | `12` | Maximum bounded governed tool calls permitted per assistant request. |
+| `FLUX_AI_TOOL_CACHE_SECONDS` | `30` | In-process TTL (seconds) for identical bounded read-tool results. |
+| `FLUX_RETAIL_PRICES_ENDPOINT` | `https://prices.azure.com/api/retail/prices` | Microsoft Azure Retail Prices API endpoint. |
+| `FLUX_RETAIL_PRICES_API_VERSION` | `2023-01-01-preview` | Retail Prices API version. |
+| `FLUX_RETAIL_PRICES_TIMEOUT_SECONDS` | `30` | Per-request timeout for retail price lookups. |
+| `FLUX_RETAIL_PRICES_REQUEST_DELAY_MS` | `100` | Deliberate spacing (ms) between retail price requests. |
+| `FLUX_RETAIL_PRICES_REFRESH_HOURS` | `24` | Age (hours) before a previously attempted price key is refreshed. |
+| `FLUX_RETAIL_PRICES_HOURS_PER_MONTH` | `730` | Governed hourly-to-monthly target cost assumption used in valuation calculations. |
+
+---
+
+### Authentication
+
+Controls how Flux validates user identity and maps claims to internal roles.
+
+<Warning>
+  `FLUX_AUTH_MODE=mock` grants every request full administrator access with no token validation. **Never deploy with `mock` mode to a publicly reachable endpoint.** Use `mock` only for local development on a loopback address. Set `FLUX_AUTH_MODE=entra` only behind correctly configured App Service Authentication (Easy Auth); Flux trusts the `X-MS-CLIENT-PRINCIPAL` header injected by App Service and will accept forged headers if Easy Auth is not enforcing authentication upstream.
+</Warning>
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_AUTH_MODE` | `mock` | Authentication mode: `mock` (local dev admin), `entra` (App Service Easy Auth + Entra), or `none` (no auth enforcement). |
+| `FLUX_ENTRA_TENANT_ID` | _(empty)_ | Required Entra tenant boundary in `entra` mode. Claims from other tenants are rejected. |
+| `FLUX_ENTRA_ADMIN_ASSIGNMENTS` | `Flux.Admin` | Comma-separated Entra app-role values or group object IDs mapped to the `admin` role. |
+| `FLUX_ENTRA_READER_ASSIGNMENTS` | `Flux.Reader` | Comma-separated Entra app-role values or group object IDs mapped to the `reader` role. |
+| `FLUX_AUTH_LOGIN_PATH` | `/.auth/login/aad` | App Service Easy Auth login redirect path surfaced to the frontend. |
+| `FLUX_AUTH_LOGOUT_PATH` | `/.auth/logout` | App Service Easy Auth logout redirect path surfaced to the frontend. |
+| `FLUX_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated allowed CORS origins. Add the Vite dev server origin during development; remove or restrict for production. |
+
+---
+
+### Backup
+
+Optional DuckDB backup to Azure Blob Storage. When a storage account URL is set, each successful sync uploads a checkpointed DuckDB file. Prefix-scoped retention pruning runs automatically.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_BACKUP_STORAGE_ACCOUNT_URL` | _(empty)_ | Blob service URL for DuckDB backups. When empty, backups are disabled. |
+| `FLUX_BACKUP_CONTAINER` | `flux-backups` | Private Blob container for uploaded database backups. |
+| `FLUX_BACKUP_RETENTION_DAYS` | `30` | Age (days) after which Flux-owned backup blobs are pruned. |
+| `FLUX_RECOVER_DATABASE_FROM_LATEST_BACKUP` | `false` | When `true`, Flux downloads and restores the latest backup on startup. Use only for deliberate disaster recovery. |

@@ -1,0 +1,139 @@
+---
+title: "Opportunities: Unified Advisor and Flux Signals Findings"
+sidebarTitle: "Opportunities"
+description: "The Flux opportunities queue combines Azure Advisor and Flux Signals findings with evidence packs, heuristic confidence scoring, provenance-aware cost valuation, and CSV/XLSX export."
+---
+
+Flux presents a single unified opportunity queue that combines Azure Advisor Cost and Performance recommendations with Flux Signals findings — the deterministic, versioned rule engine built into Flux. Every finding in the queue carries evidence, a confidence score, a risk-adjusted monthly value where calculable, and an explicit actionability state. You never need to cross-reference Advisor and Flux separately to understand what to act on.
+
+<Note>
+Flux collects only Azure Advisor **Cost** and **Performance** recommendations. Security, Reliability, and Operational Excellence findings remain in their authoritative Azure services (Microsoft Defender for Cloud, Azure Monitor, Azure Advisor) and are not surfaced in the Flux opportunity queue.
+</Note>
+
+## Sources
+
+<CardGroup cols={2}>
+  <Card title="Azure Advisor" icon="microsoft">
+    Active, untracked Cost and Performance recommendations collected via Azure Resource Graph. Findings are **semantically de-duplicated** before storage: if Advisor returns multiple records for the same scope, resource, recommendation type, action, and target, only one canonical record is retained.
+  </Card>
+  <Card title="Flux Signals" icon="bolt">
+    Versioned deterministic ARG rules evaluated during the Flux Intelligence sync. Each rule produces findings identified by `ruleId:resourceId` with source observation time, category, impact, confidence, and raw evidence. Current rule version: `2026-07-25.4`.
+  </Card>
+</CardGroup>
+
+## Flux Signals catalog
+
+The following rules are evaluated during each Flux Intelligence sync:
+
+### Compute and storage
+
+| Rule ID | Match Criteria | Default Posture |
+|---|---|---|
+| `stopped_allocated_vm` | VM reports `PowerState/stopped` (not deallocated) | High-impact review; compute capacity is still billed |
+| `deallocated_vm_residual_cost` | VM reports `PowerState/deallocated` | Review residual attached resources for ongoing charges |
+| `unattached_disk` | Managed disk has no `managedBy`, is `Unattached`, and does not match ASR exclusions | Review-only; confirm retention and owner approval before deletion |
+| `aged_snapshot` | Snapshot `timeCreated` is older than `FLUX_INTELLIGENCE_SNAPSHOT_AGE_DAYS` (default 30 days) | Review-only lifecycle candidate |
+| `premium_snapshot` | Snapshot SKU contains `Premium` | Review whether Standard snapshot storage satisfies recovery requirements |
+| `premium_disk_underutilized_review` | Attached Premium disk with ≥30 days telemetry, ≥70% coverage, combined IOPS p95 ≤ 20, combined throughput p95 ≤ 1 MiB/s | Review-stage only; no automatic target SKU or savings claim |
+
+### Storage modernization and governance
+
+| Rule ID | Match Criteria | Default Posture |
+|---|---|---|
+| `storage_gpv1_modernization` | Storage account `kind` is legacy `Storage` / GPv1 | Review migration to GPv2 |
+| `missing_allocation_tags` | Resource has no tags, or a configured required tag is missing | Governance review |
+
+### Snapshot and network relationships
+
+| Rule ID | Match Criteria | Default Posture |
+|---|---|---|
+| `snapshot_source_deleted` | Snapshot references a source disk no longer present in ARG | Review recovery purpose before deletion |
+| `public_ip_unattached` | Public IP has no IP configuration attachment | Review reservation and future-use requirements |
+| `public_ip_orphan_nic` | Public IP attached to a NIC with no VM and no private endpoint | Review network ownership before release |
+| `public_ip_deallocated_vm` | Public IP associated with a deallocated VM | Review whether the address must remain reserved |
+| `empty_standard_load_balancer` | Standard Load Balancer with no backend targets | Review frontends, probes, NAT, and outbound |
+| `empty_application_gateway` | Application Gateway with no backend targets | Review listeners, rules, probes, and reserved use |
+| `vnet_gateway_no_connections` | VNet Gateway with no connections and no point-to-site config | Review connectivity ownership |
+| `unused_network_interface` | NIC with no VM association and no private endpoint | Review dependency and release safety |
+| `idle_nat_gateway` | NAT Gateway with zero attached subnets | Review network design and future reservation |
+| `empty_availability_set` | Availability Set with zero associated VMs | Review whether it is an intentional placeholder |
+| `orphaned_network_security_group` | NSG with zero subnet and zero NIC associations | Review policy ownership before removal |
+
+### Application platform, licensing, and retirement
+
+| Rule ID | Match Criteria | Default Posture |
+|---|---|---|
+| `empty_paid_app_service_plan` | Paid App Service Plan with no sites (Free, Shared, Dynamic, F1, D1, Y1 excluded) | Review before deleting or downsizing |
+| `windows_ahb_eligibility_review` | Windows VM/VMSS where license type does not start with `Windows` and publisher is not desktop/Visual Studio | Eligibility review only — Flux cannot prove entitlement |
+| `sql_vm_ahb_eligibility_review` | SQL VM not using AHUB license and SQL SKU is not Developer or Express | Eligibility review only |
+| `basic_public_ip_retired` | Public IP uses Basic SKU | Retirement/migration review |
+| `basic_load_balancer_retired` | Load Balancer uses Basic SKU | Retirement/migration review |
+
+## Confidence scoring
+
+Each finding receives a **method-versioned heuristic confidence score** built from four components:
+
+| Component | Description |
+|---|---|
+| **Persistence** | How many consecutive Flux sync runs has this finding appeared in? A finding that is consistently present earns higher confidence than a single-observation result. |
+| **Corroboration** | Does an independent source (Advisor for a Flux finding, or vice versa) agree? Cross-source agreement lifts confidence. |
+| **Evidence freshness** | How recently was the finding observed? The lowest freshness contribution is assigned to evidence older than 30 days. |
+| **Telemetry coverage** | For VM-related findings, does the estate have actionable telemetry for the resource? Coverage gaps reduce confidence. |
+
+Confidence scores are versioned. A methodology change produces new scores across the full finding set rather than silently overwriting historical scores.
+
+## Valuation
+
+Flux calculates two values for findings where a saving is quantifiable:
+
+<CardGroup cols={2}>
+  <Card title="Gross monthly value" icon="circle-dollar-to-slot">
+    The estimated monthly saving if the finding were acted on immediately. For VM resize targets, Flux uses the Microsoft retail price for the target SKU. For Advisor findings, the Advisor-supplied estimate is used as a fallback when no retail price is available.
+  </Card>
+  <Card title="Risk-adjusted value" icon="shield-check">
+    Gross value multiplied by the finding's confidence score. This is the number that rolls up to the dashboard opportunity total.
+  </Card>
+</CardGroup>
+
+Only **full-retirement findings** (idle VMs, unattached disks, orphaned network resources) are valued using the resource's actual Cost Management run rate. Review-only findings (AHB eligibility, governance) contribute zero to the valued total because no quantifiable saving can be claimed without proving entitlement or confirming a remediation path.
+
+## Actionability states
+
+Every finding in the opportunity queue carries one of four actionability states:
+
+| State | Meaning |
+|---|---|
+| `actionable_now` | The finding has corroborating independent sources, governed positive value, or current cost exposure with high impact and sufficient confidence |
+| `portfolio_review` | The finding warrants review but does not meet the bar for immediate action — typically a governance or licensing finding |
+| `evidence_needed` | Evidence is stale (older than the per-rule freshness window) and must be refreshed before action |
+| `governance_review` | A policy, tagging, or compliance finding that requires an owner decision rather than a cost action |
+
+A stale-evidence gate takes precedence over all value and corroboration signals. A finding whose source evidence is older than the configured freshness window is forced to `evidence_needed` regardless of confidence or value.
+
+## Evidence packs
+
+The `/api/evidence/opportunity` endpoint returns a deterministic evidence package for any finding. The package includes:
+
+- Resource identity and current inventory snapshot fields
+- Cost Management run rate for the resource
+- All raw ARG evidence fields from the Flux Signals rule match
+- Confidence score breakdown (persistence, corroboration, freshness, coverage)
+- Valuation lineage (target retail price, Advisor estimate, calculation method version)
+- Actionability reasoning
+
+## Filters and export
+
+The opportunity queue supports the following filters:
+
+| Filter | Options |
+|---|---|
+| **Search** | Free-text match against resource name, reason, and title |
+| **Resource type** | Specific Azure resource type |
+| **Subscription** | One configured subscription |
+| **Region** | Azure region |
+| **Source** | `advisor` or `flux_signals` |
+| **Category** | `Cost`, `Cost exposure`, `Lifecycle`, `Modernization`, `Governance` |
+| **Confidence** | Filter to a minimum confidence band |
+| **Actionability** | `actionable_now`, `portfolio_review`, `evidence_needed`, `governance_review` |
+
+The filtered result set can be exported as **CSV** or **XLSX** via `/api/opportunities/export`, which applies the same active filters without the pagination limit.

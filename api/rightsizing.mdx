@@ -1,0 +1,420 @@
+---
+title: "Right-Sizing Recommendation Endpoints"
+sidebarTitle: "Right-Sizing"
+description: "GET /api/recommendations/rightsizing returns multi-source VM idle and resize findings. POST /api/rightsizing/boards manages planning boards. Includes quality reconciliation endpoint."
+---
+
+The right-sizing endpoints expose Flux's deterministic VM classification results and planning board management. Every VM in the estate receives an explicit coverage state — from full telemetry-backed classification through advisory corroboration to evidence-gap acknowledgement. Planning boards let your team turn those findings into reservation and savings-plan purchase decisions, captured with a full decision log.
+
+---
+
+## GET /api/recommendations/rightsizing
+
+**Auth:** `reader`
+
+Returns multi-source VM idle and Advisor-corroborated resize results, paginated. Each item carries its coverage state, governed utilization evidence (CPU/memory/network percentiles), candidate action, and savings lineage. Resize targets require Azure Advisor corroboration; material source disagreement is surfaced as a `review` state rather than silently overridden.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `status` | string | `` (all) | Filter by coverage/action state — see coverage states below |
+| `subscriptionId` | string | `` (all) | Restrict to a single subscription GUID |
+| `limit` | integer | `250` | Page size (1–2000) |
+| `offset` | integer | `0` | Page offset (≥ 0) |
+
+### Coverage states
+
+| State | Meaning |
+|---|---|
+| `idle` | CPU p95 ≤ threshold, peak below guardrail, network p95 below threshold — confirmed idle |
+| `resize` | CPU p95 within review headroom, Advisor corroboration present |
+| `review` | Telemetry available but sources disagree beyond the configured disagreement threshold |
+| `evidence_needed` | Insufficient telemetry window or sample coverage |
+| `no_telemetry` | No telemetry source matched this VM |
+
+### Key response fields
+
+| Field | Type | Description |
+|---|---|---|
+| `resourceId` | string | Full Azure resource ID |
+| `resourceName` | string | Display name |
+| `subscriptionName` | string | Subscription display name |
+| `resourceGroup` | string | Resource group |
+| `region` | string | Azure region |
+| `status` | string | Coverage/action state (see above) |
+| `currentSku` | string | Currently deployed VM SKU |
+| `targetSku` | string | Advisor-corroborated recommended SKU |
+| `cpuP95` | float | 95th-percentile CPU utilization (%) |
+| `cpuMaximum` | float | Peak CPU observed in the evidence window |
+| `networkInP95` | float | 95th-percentile inbound network (bytes/hour) |
+| `networkOutP95` | float | 95th-percentile outbound network (bytes/hour) |
+| `metricCoveragePercent` | float | Fraction of the evidence window with CPU samples |
+| `evidenceWindowDays` | integer | Governed telemetry window length in days |
+| `coverageFlag` | string | Short label summarising coverage quality |
+| `telemetrySource` | string | Primary source: `azure_monitor`, `logicmonitor`, or combined |
+| `advisorCorroborated` | boolean | Whether a matching Advisor resize recommendation exists |
+| `estimatedMonthlySaving` | float | Estimated monthly saving if the recommendation is implemented |
+| `currency` | string | Currency code for savings figures |
+| `computedAt` | string | ISO 8601 timestamp of the last classification run |
+| `methodVersion` | string | Versioned classification method identifier |
+
+### Example request
+
+```bash
+curl -s "https://flux.example.com/api/recommendations/rightsizing?status=idle&limit=50" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Example response (truncated)
+
+```json
+{
+  "items": [
+    {
+      "resourceId": "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/prod-rg/providers/Microsoft.Compute/virtualMachines/vm-api-01",
+      "resourceName": "vm-api-01",
+      "subscriptionName": "Production",
+      "resourceGroup": "prod-rg",
+      "region": "eastus",
+      "status": "idle",
+      "currentSku": "Standard_D4s_v3",
+      "targetSku": null,
+      "cpuP95": 3.1,
+      "cpuMaximum": 12.4,
+      "networkInP95": 1048576,
+      "networkOutP95": 524288,
+      "metricCoveragePercent": 94.2,
+      "evidenceWindowDays": 14,
+      "coverageFlag": "full",
+      "telemetrySource": "azure_monitor",
+      "advisorCorroborated": false,
+      "estimatedMonthlySaving": 187.50,
+      "currency": "USD",
+      "computedAt": "2025-07-15T10:00:00Z",
+      "methodVersion": "2.1"
+    }
+  ],
+  "total": 1,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+---
+
+## GET /api/recommendations/rightsizing/export
+
+**Auth:** `reader`
+
+Streams a tabular export of right-sizing recommendations. Accepts the same `status` and `subscriptionId` filters as the list endpoint. The `format` parameter selects output type.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `status` | string | `` | Filter by coverage/action state |
+| `subscriptionId` | string | `` | Restrict to one subscription |
+| `format` | string | `csv` | Export format: `csv` or `xlsx` |
+
+XLSX exports include a **Metadata** sheet with generation time, snapshot version, and applied filters.
+
+---
+
+## GET /api/recommendations/quality
+
+**Auth:** `reader`
+
+Returns quality-reconciliation metrics covering four dimensions: Advisor ID matching, semantic-action classification, resource-resolution accuracy, and actionability signals. Use this endpoint to investigate discrepancies between Flux's deterministic classification and Azure Advisor findings.
+
+### Example request
+
+```bash
+curl -s "https://flux.example.com/api/recommendations/quality" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Example response (truncated)
+
+```json
+{
+  "advisorIdResolution": {
+    "matched": 312,
+    "unmatched": 14,
+    "matchRate": 0.957
+  },
+  "semanticAction": {
+    "resize": 201,
+    "idle": 97,
+    "review": 28
+  },
+  "resourceResolution": {
+    "resolved": 320,
+    "unresolved": 6
+  },
+  "actionability": {
+    "actionableNow": 198,
+    "portfolioReview": 87,
+    "evidenceNeeded": 41
+  }
+}
+```
+
+---
+
+## GET /api/rightsizing/boards
+
+**Auth:** `reader`
+
+Returns all planning boards. Each board contains commitment buckets, planned quantities, planner-entered economics, and VM decisions. The primary (Flux-owned) board is regenerated from governed evidence every 72 hours; human boards are never overwritten by scheduled refreshes.
+
+```bash
+curl -s "https://flux.example.com/api/rightsizing/boards" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## POST /api/rightsizing/boards
+
+**Auth:** `admin`
+
+Creates a new empty planning board.
+
+### Request body (`RightsizingBoardCreate`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `name` | string | ✅ | 1–120 chars | Display name for the board |
+| `description` | string | | max 500 chars | Optional description |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Board created; returns the new board object |
+| `422` | Validation error (e.g., duplicate name) |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/rightsizing/boards" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Aggressive downsize Q3", "description": "Scenario board for Q3 planning"}'
+```
+
+---
+
+## PUT /api/rightsizing/boards/{board_id}
+
+**Auth:** `admin`
+
+Renames an existing board and updates its description. The primary Flux-owned board cannot be renamed through this endpoint.
+
+### Path parameter
+
+| Parameter | Description |
+|---|---|
+| `board_id` | Board identifier string |
+
+### Request body (`RightsizingBoardUpdate`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `name` | string | ✅ | 1–120 chars | New display name |
+| `description` | string | | max 500 chars | Updated description |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Board updated; returns updated board object |
+| `404` | Board not found |
+| `409` | Board is protected and cannot be renamed |
+
+---
+
+## POST /api/rightsizing/boards/{board_id}/primary
+
+**Auth:** `admin`
+
+Promotes a board to the primary position. Only one board can be primary at a time.
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Board promoted to primary |
+| `404` | Board not found |
+| `409` | Board cannot be made primary |
+
+---
+
+## DELETE /api/rightsizing/boards/{board_id}
+
+**Auth:** `admin`
+
+Deletes a planning board. The primary Flux-owned board cannot be deleted.
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `200` | Board deleted |
+| `404` | Board not found |
+| `409` | Board is protected and cannot be deleted |
+
+---
+
+## POST /api/rightsizing/boards/{board_id}/duplicate
+
+**Auth:** `admin`
+
+Duplicates an existing board under a new name. The new board inherits buckets and VM assignments from the source board.
+
+### Request body (`RightsizingBoardCreate`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | ✅ | Display name for the duplicated board |
+| `description` | string | | Optional description |
+
+---
+
+## GET /api/rightsizing/plan
+
+**Auth:** `reader`
+
+Returns the full planning board view for a given board, including commitment buckets, assigned VMs, planned quantities, planner-entered economics, and per-VM decisions.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `boardId` | string | `` (primary board) | Target board identifier (max 64 chars) |
+
+```bash
+curl -s "https://flux.example.com/api/rightsizing/plan?boardId=abc123" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/rightsizing/plan/log
+
+**Auth:** `reader`
+
+Returns the decision log for a planning board — an ordered history of VM assignments, bucket changes, and planner notes.
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `boardId` | string | `` (primary board) | Target board identifier |
+| `limit` | integer | `250` | Page size (1–2000) |
+
+---
+
+## PUT /api/rightsizing/plan/bucket
+
+**Auth:** `admin`
+
+Creates or updates a commitment bucket in a planning board. Buckets represent a target SKU in a region with associated quantity and pricing assumptions (pay-as-you-go, 1-year RI, savings plan).
+
+### Request body (`RightsizingBucketUpdate`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boardId` | string | | Target board (empty = primary) |
+| `region` | string | ✅ | Azure region (max 64 chars) |
+| `sku` | string | ✅ | Target VM SKU (max 100 chars) |
+| `strategy` | string | | Commitment strategy label (max 60 chars) |
+| `refQuantity` | integer | | Planned quantity (0–100,000) |
+| `refMonthlyPayg` | float | | Monthly pay-as-you-go reference cost |
+| `refMonthlyRi1y` | float | | Monthly 1-year RI reference cost |
+| `refRi1yUpfront` | float | | 1-year RI upfront cost |
+| `refMonthlySp1y` | float | | Monthly 1-year savings plan reference cost |
+| `refMonthlySavings` | float | | Estimated monthly saving for the bucket |
+| `refReservationCheck` | string | | Reservation verification note (max 200 chars) |
+| `note` | string | | Planner note (max 2000 chars) |
+
+---
+
+## DELETE /api/rightsizing/plan/bucket
+
+**Auth:** `admin`
+
+Removes a bucket from the plan. The bucket `key` is a compound region/SKU identifier.
+
+### Query parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | ✅ | Bucket key (1–200 chars) |
+
+---
+
+## PUT /api/rightsizing/plan/assignments
+
+**Auth:** `admin`
+
+Moves one or more VMs to a target bucket, optionally recording a decision and a planner note.
+
+### Request body (`RightsizingAssignmentsUpdate`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boardId` | string | | Target board (empty = primary) |
+| `moves` | array | ✅ | 1–500 move objects (see below) |
+
+Each move object (`RightsizingMove`):
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `vmKey` | string | ✅ | VM identifier key (max 1024 chars) |
+| `vmName` | string | | VM display name |
+| `subscriptionName` | string | | Subscription display name |
+| `bucketKey` | string | ✅ | Target bucket key (max 200 chars) |
+| `decision` | string | | Decision label, e.g. `approved` (max 40 chars) |
+| `note` | string | | Planner note (max 2000 chars) |
+
+---
+
+## POST /api/rightsizing/plan/import
+
+**Auth:** `admin`
+
+Imports a plan file (buckets, assignments, VM metadata, and log entries) into a board. Supports dry-run validation before committing.
+
+### Request body (`RightsizingPlanImport`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `boardId` | string | | Target board ID (empty = primary) |
+| `newBoardName` | string | | Create a new board with this name instead |
+| `dryRun` | boolean | | `true` validates without committing |
+| `buckets` | object | | Map of bucket key → bucket definition |
+| `assignments` | object | | Map of VM key → bucket key |
+| `vmMeta` | object | | Map of VM key → VM metadata |
+| `log` | array | | Up to 10,000 log entries to replay |
+| `vms` | array | | Up to 10,000 VM records to seed |
+
+---
+
+## GET /api/rightsizing/proposal/status
+
+**Auth:** `reader`
+
+Returns the status of the latest Flux right-sizing proposal — when it was last generated, the next scheduled refresh, and whether a refresh is in progress.
+
+---
+
+## POST /api/rightsizing/proposal/refresh
+
+**Auth:** `admin`
+
+Forces an immediate regeneration of the Flux right-sizing proposal from current governed evidence. Returns `409` if a refresh is already running.
+
+```bash
+curl -s -X POST "https://flux.example.com/api/rightsizing/proposal/refresh" \
+  -H "Authorization: Bearer $TOKEN"
+```

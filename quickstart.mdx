@@ -1,47 +1,146 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with Flux in Under 5 Minutes"
+sidebarTitle: "Quickstart"
+description: "Install Flux locally, connect to Azure using PowerShell identity, seed demo data, and explore the React dashboard. Covers local dev, dev mode with Vite, and optional demo data."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
+This guide walks you through running Flux on your local machine — either pointed at a real Azure subscription or loaded with demonstration data so you can explore every chart and enrichment state without an Azure connection. By the end you will have the full Flux dashboard running at `http://127.0.0.1:8765`, with inventory, cost, and opportunities populated and ready to explore.
 
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
+<Note>
+  **Prerequisites** before you begin:
+  - **Python 3.10+** — used to run the FastAPI backend and DuckDB writer.
+  - **Node.js 20+** — used to build the React 19 frontend.
+  - **PowerShell 7** (recommended) — required for the `Connect-AzAccount` Azure login and the `start-flux.ps1` convenience launcher.
+</Note>
 
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+## Local setup
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+  <Step title="Clone and install dependencies">
+    Create a virtual environment, install the Python dependencies, then build the React frontend:
 
-    ```bash
-    npm install your-package
-    ```
+    <CodeGroup>
+      ```powershell PowerShell
+      python -m venv .venv
+      .\.venv\Scripts\Activate.ps1
+      python -m pip install -r .\requirements.txt
+
+      Set-Location .\frontend
+      npm install
+      npm run build
+      Set-Location ..
+      ```
+    </CodeGroup>
+
+    The `npm run build` step produces the static assets in `frontend/dist` that FastAPI serves in production mode. You only need to rebuild when frontend source files change.
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
 
-    ```bash
-    your-cli init
-    ```
+  <Step title="Connect to Azure">
+    Flux uses your active Azure PowerShell session for local development. Sign in before starting the server:
+
+    <CodeGroup>
+      ```powershell PowerShell
+      Connect-AzAccount
+      ```
+    </CodeGroup>
+
+    The signed-in identity needs read access to Azure Resource Graph and `Microsoft.CostManagement/*/read` on the subscriptions you plan to add. No service principal or client secret is required for local development.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
 
-    ```bash
-    your-cli start
-    ```
+  <Step title="Start Flux">
+    Run the application entry point directly, or use the convenience launcher script:
+
+    <CodeGroup>
+      ```powershell Direct (python)
+      python .\app.py
+      ```
+
+      ```powershell Launcher script
+      .\start-flux.ps1
+      ```
+    </CodeGroup>
+
+    The launcher automatically builds the frontend if `frontend/dist/index.html` is missing, then starts the server. Open [http://127.0.0.1:8765](http://127.0.0.1:8765) — Flux opens with a mock administrator session by default.
+
+    You can pass a custom port to the launcher:
+
+    <CodeGroup>
+      ```powershell PowerShell
+      .\start-flux.ps1 -Port 9000
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Add subscriptions and synchronize">
+    With Flux running:
+
+    1. Open **Administration → Integrations**.
+    2. Optionally add your Entra tenant ID for verification.
+    3. Add one or more Azure subscription IDs and friendly names, then **Save**.
+    4. Select **Synchronize now**.
+
+    Flux runs inventory, Advisor, Flux Intelligence, and cost collection in parallel. The first sync backfills 90 days of daily cost history for each new subscription. Progress is visible per source on the Integrations status page.
   </Step>
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Development mode
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+When you are actively changing frontend code, run the Vite dev server alongside the API for instant hot-module reload:
+
+<Steps>
+  <Step title="Start the API in one terminal">
+    <CodeGroup>
+      ```powershell PowerShell
+      python .\app.py
+      ```
+    </CodeGroup>
+
+    The API binds to `http://127.0.0.1:8765` as normal.
+  </Step>
+
+  <Step title="Start the Vite dev server in a second terminal">
+    <CodeGroup>
+      ```powershell PowerShell
+      Set-Location .\frontend
+      npm run dev
+      ```
+    </CodeGroup>
+
+    Open [http://localhost:5173](http://localhost:5173). The Vite dev server proxies all `/api` requests to port `8765`, so the backend and frontend stay in sync.
+  </Step>
+</Steps>
+
+## Demo data
+
+To explore all chart and enrichment states without an Azure subscription, seed the database with demonstration data:
+
+<CodeGroup>
+  ```powershell PowerShell
+  $env:FLUX_DEV_SEED = "true"
+  python .\app.py
+  ```
+</CodeGroup>
+
+Demo rows are inserted **only when the DuckDB snapshot table is empty** and are tagged with demo source lineage so they are distinguishable from real Azure observations. Starting Flux a second time with a non-empty database is safe — the seed step is skipped automatically.
+
+<Note>
+  Demo data covers inventory, cost, and opportunity enrichment states. It does not simulate real-time synchronization or the Flux Intelligence assistant, which requires a configured AI provider key.
+</Note>
+
+## Verification
+
+Run the Python test suite and frontend lint/build checks to confirm your installation is healthy:
+
+<CodeGroup>
+  ```powershell Python tests
+  python -m unittest discover -s .\tests -v
+  ```
+
+  ```powershell Frontend lint and build
+  Set-Location .\frontend
+  npm run lint
+  npm run build
+  ```
+</CodeGroup>
+
+Interactive API documentation is available at [http://127.0.0.1:8765/docs](http://127.0.0.1:8765/docs) once the server is running.

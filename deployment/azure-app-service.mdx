@@ -1,0 +1,234 @@
+---
+title: "Deploy Flux to Azure App Service"
+sidebarTitle: "App Service"
+description: "Step-by-step guide to deploying Flux on Azure App Service with managed identity, Easy Auth, app roles, and the production environment settings required before go-live."
+---
+
+Flux is designed for Azure App Service on Linux, using a system-assigned or user-assigned managed identity for secretless access to Azure Resource Graph, Azure Advisor, and Cost Management, and App Service Authentication (Easy Auth) for user authentication. No client secrets or publish profiles are stored in the repository or the application itself — Entra validates the user token before the request reaches Flux, and the managed identity obtains an Azure management token transparently.
+
+## Pre-deployment checklist
+
+<Steps>
+  <Step title="Create the App Service">
+    Provision a Linux App Service running **Python 3.12**. The production artifact vendors `manylinux_2_28_x86_64` Python wheels, so the OS must be Linux.
+
+    ```bash
+    az webapp create \
+      --resource-group <resource-group> \
+      --plan <app-service-plan> \
+      --name <web-app-name> \
+      --runtime "PYTHON:3.12"
+    ```
+
+    Set HTTPS-only on the resource:
+
+    ```bash
+    az webapp update \
+      --resource-group <resource-group> \
+      --name <web-app-name> \
+      --https-only true
+    ```
+  </Step>
+
+  <Step title="Enable managed identity">
+    Enable a **system-assigned** managed identity:
+
+    ```powershell
+    $identity = az webapp identity assign `
+      --resource-group <resource-group> `
+      --name <web-app-name> | ConvertFrom-Json
+
+    $principalId = $identity.principalId
+    Write-Host "Principal ID: $principalId"
+    ```
+
+    Or, if you prefer a **user-assigned** identity, assign it to the App Service and note its client ID — you will set `FLUX_MANAGED_IDENTITY_CLIENT_ID` in a later step.
+  </Step>
+
+  <Step title="Grant RBAC to the managed identity">
+    Flux needs two permission sets on every subscription it will query.
+
+    **Reader** — for Azure Resource Graph (inventory, Advisor, Policy):
+
+    ```powershell
+    az role assignment create `
+      --assignee-object-id $principalId `
+      --assignee-principal-type ServicePrincipal `
+      --role Reader `
+      --scope /subscriptions/<subscription-guid>
+    ```
+
+    **Microsoft.CostManagement/\*/read** — for Cost Management queries. The deployed custom **FinOps Platform Reader** role includes this permission and is the recommended assignment:
+
+    ```powershell
+    az role assignment create `
+      --assignee-object-id $principalId `
+      --assignee-principal-type ServicePrincipal `
+      --role "FinOps Platform Reader" `
+      --scope /subscriptions/<subscription-guid>
+    ```
+
+    Repeat both assignments for every subscription Flux will query, or assign at a shared management-group scope. RBAC propagation can take several minutes.
+  </Step>
+
+  <Step title="Enable App Service Authentication (Easy Auth)">
+    In the Azure portal, open the App Service → **Authentication** → **Add identity provider** → choose **Microsoft**.
+
+    Use the Flux app registration (the same registration used for app roles below). Configure:
+
+    - **Require authentication** — redirect unauthenticated browser requests to Microsoft.
+    - **Restrict issuer** — set the token issuer URL to `https://login.microsoftonline.com/<tenant-id>/v2.0` to reject tokens from other tenants.
+    - Ensure no network path bypasses App Service Authentication. The application trusts `X-MS-CLIENT-PRINCIPAL` only because App Service removes external copies and injects its validated value.
+  </Step>
+
+  <Step title="Create and assign Flux app roles">
+    On the Entra app registration, define two app roles:
+
+    | Display name | Value | Allowed member types |
+    |---|---|---|
+    | Flux Reader | `Flux.Reader` | Users/Groups |
+    | Flux Administrator | `Flux.Admin` | Users/Groups |
+
+    Assign users or groups through the **Enterprise application** blade. Flux maps:
+
+    - `Flux.Reader` → read-only dashboard, inventory, and opportunities.
+    - `Flux.Admin` → all reader access plus integration configuration and synchronization.
+
+    Group object IDs can be used in place of, or in addition to, role values — configure them via `FLUX_ENTRA_ADMIN_ASSIGNMENTS` and `FLUX_ENTRA_READER_ASSIGNMENTS`.
+  </Step>
+
+  <Step title="Set required application settings">
+    In **Configuration → Application settings**, set these minimum required values:
+
+    | Setting | Value |
+    |---|---|
+    | `FLUX_AUTH_MODE` | `entra` |
+    | `FLUX_ENTRA_TENANT_ID` | Your Entra tenant GUID |
+    | `FLUX_ENTRA_ADMIN_ASSIGNMENTS` | `Flux.Admin` (or comma-separated group object IDs) |
+    | `FLUX_ENTRA_READER_ASSIGNMENTS` | `Flux.Reader` (or comma-separated group object IDs) |
+
+    For a **user-assigned identity**, also set:
+
+    | Setting | Value |
+    |---|---|
+    | `FLUX_MANAGED_IDENTITY_CLIENT_ID` | The client ID of the user-assigned managed identity |
+
+    A system-assigned identity requires no client ID setting.
+  </Step>
+
+  <Step title="Select the provider and synchronize">
+    Once the App Service is running:
+
+    1. Open **Integrations** in the Flux UI.
+    2. Add the tenant ID and one or more subscription IDs.
+    3. Select **App Service managed identity**.
+    4. Save, then select **Synchronize now**.
+
+    Flux obtains a token for `https://management.azure.com/.default` and begins paginated inventory, Advisor, and Cost Management collection.
+  </Step>
+</Steps>
+
+---
+
+## Application settings reference
+
+Set these in **App Service → Configuration → Application settings**. The pipeline applies non-secret settings additively on every deploy, preserving Key Vault references configured out-of-band.
+
+| Setting | Production value | Purpose |
+|---|---|---|
+| `FLUX_AUTH_MODE` | `entra` | Enable Entra Easy Auth principal decoding |
+| `FLUX_ENTRA_TENANT_ID` | `<tenant-guid>` | Required tenant boundary; tokens from other tenants are rejected |
+| `FLUX_ENTRA_ADMIN_ASSIGNMENTS` | `Flux.Admin` | Admin app-role values or group object IDs (comma-separated) |
+| `FLUX_ENTRA_READER_ASSIGNMENTS` | `Flux.Reader` | Reader app-role values or group object IDs (comma-separated) |
+| `FLUX_AUTH_LOGIN_PATH` | `/.auth/login/aad` | Easy Auth sign-in path used by the frontend |
+| `FLUX_AUTH_LOGOUT_PATH` | `/.auth/logout` | Easy Auth sign-out path |
+| `FLUX_MANAGED_IDENTITY_CLIENT_ID` | `<client-id>` | User-assigned identity client ID; omit for system-assigned |
+| `FLUX_DUCKDB_PATH` | `/home/data/flux.duckdb` | Persistent storage path (see DuckDB section below) |
+| `FLUX_SYNC_WORKER_MODE` | `external` | Production WebJob mode; web process is a read-only consumer |
+| `FLUX_COST_MANAGEMENT_MAX_RETRIES` | `5` | Retry count for throttled or unavailable cost requests |
+| `FLUX_COST_MANAGEMENT_REQUEST_DELAY_SECONDS` | `20` | Conservative base interval for QPU-weighted cost-job pacing |
+| `FLUX_COST_MANAGEMENT_CLIENT_TYPE` | `FluxFinOps` | Stable client classification sent with every Cost Management query |
+| `FLUX_COST_HISTORY_CHUNK_DAYS` | `3` | Maximum date span committed per daily-history transaction |
+| `FLUX_COST_DETAILS_BACKFILL_ENABLED` | `true` | Enable asynchronous Cost Details fallback for failed Query API scopes |
+| `FLUX_COST_DETAILS_MAX_REPORTS_PER_RUN` | `4` | Maximum monthly fallback reports generated per daily run |
+| `FLUX_COST_DETAILS_CURRENT_REFRESH_DAYS` | `7` | Refresh cadence for current-month Cost Details checkpoints |
+| `FLUX_INTELLIGENCE_AI_ENABLED` | `true` | Enable the Ask Flux assistant API |
+| `FLUX_AI_PROVIDER` | `deepseek` | Provider adapter (`deepseek`, `openrouter`, or `foundry`) |
+| `FLUX_AI_BUDGET_USD` | `50` | Evaluation budget ceiling |
+| `FLUX_AI_STOP_AT_USD` | `50` | Estimated-cost stop/report threshold |
+| `FLUX_AI_MAX_TOOL_CALLS` | `12` | Maximum bounded governed tool calls per request |
+| `FLUX_AI_TOOL_CACHE_SECONDS` | `30` | In-process TTL for identical bounded read-tool results |
+| `FLUX_AI_TRANSCRIPT_RETENTION_DAYS` | `30` | Prompt/reply review retention; set to `0` to disable |
+| `FLUX_DUCKDB_MEMORY_LIMIT` | `1536MB` | DuckDB analytical memory ceiling |
+| `FLUX_DUCKDB_TEMP_DIRECTORY` | `/home/data/.duckdb-tmp` | DuckDB temporary spill path (persistent storage) |
+| `FLUX_DUCKDB_MAX_TEMP_DIRECTORY_SIZE` | `8GB` | Maximum spill size |
+| `FLUX_ANALYTICS_STAGING_DIRECTORY` | `/home/data/staging` | Staged analytical payloads awaiting the singleton analytics writer |
+| `FLUX_TELEMETRY_BOOTSTRAP_ROOT` | `/home/data/telemetry-bootstrap` | Historical telemetry extract root |
+| `FLUX_FINOPS_TOOLKIT_CACHE_ROOT` | `/home/data/finops-toolkit` | FinOps Toolkit open-data download cache |
+| `FLUX_BACKUP_STORAGE_ACCOUNT_URL` | `https://<account>.blob.core.windows.net` | Blob service URL for DuckDB backups; empty disables backups |
+| `FLUX_BACKUP_CONTAINER` | `flux-backups` | Private Blob container for database backups |
+| `FLUX_BACKUP_RETENTION_DAYS` | `30` | Age after which Flux-owned backup blobs are pruned |
+| `PYTHONPATH` | `/home/site/wwwroot:/home/site/wwwroot/.python_packages/lib/site-packages` | Path to vendored production Python wheels |
+| `PYTHONUNBUFFERED` | `1` | Flush Python output immediately to App Service log stream |
+| `WEBSITE_RUN_FROM_PACKAGE` | `1` | Mount the ZIP artifact read-only; required for the vendored wheel layout |
+
+<Note>
+  Secret settings — `FLUX_DEEPSEEK_API_KEY`, `LM_BEARER_TOKEN`, `FLUX_OPENROUTER_API_KEY`, `FLUX_WIKI_API_TOKEN` — must be provisioned as Azure Key Vault references out-of-band. The deployment pipeline applies non-secret settings additively with `az webapp config appsettings set` and will never overwrite Key Vault references.
+</Note>
+
+---
+
+## DuckDB persistence
+
+DuckDB is the Flux analytical database. By default it is stored at `data/flux.duckdb` relative to the application root, but on App Service this path is inside `wwwroot`, which is replaced on every ZIP deploy.
+
+**In production, always set:**
+
+```text
+FLUX_DUCKDB_PATH=/home/data/flux.duckdb
+```
+
+The `/home` mount is App Service persistent storage — it survives redeployments and instance restarts. The deployment pipeline migrates any existing database to this path automatically on first deploy and enables `WEBSITE_RUN_FROM_PACKAGE=1` so the ZIP is mounted read-only.
+
+Configure co-located paths for all other file-backed state:
+
+```text
+FLUX_DUCKDB_TEMP_DIRECTORY=/home/data/.duckdb-tmp
+FLUX_ANALYTICS_STAGING_DIRECTORY=/home/data/staging
+FLUX_TELEMETRY_BOOTSTRAP_ROOT=/home/data/telemetry-bootstrap
+FLUX_FINOPS_TOOLKIT_CACHE_ROOT=/home/data/finops-toolkit
+```
+
+---
+
+## WebJob architecture
+
+Production Flux uses **external sync worker mode** (`FLUX_SYNC_WORKER_MODE=external`). In this configuration:
+
+- The **web process** is a read-only consumer in snapshot mode. It enqueues sync requests and serves the API, but never opens DuckDB as a writer.
+- A **singleton continuous WebJob** (`flux-sync-worker`) claims queued sync requests from `sync_runs` under an execution lease. Only one worker instance runs at a time; if the worker exits, the OS sync lease is released and the replacement worker recovers the unfinished request.
+- Independent **scheduled WebJobs** enqueue focused requests for inventory, intelligence, cost history, FOCUS ingestion, retail prices, Advisor, LogicMonitor discovery and metrics, FinOps Toolkit data, and right-sizing due-checks. All DuckDB writes are serialized through the one worker.
+
+This prevents concurrent DuckDB writers across multiple App Service instances and ensures restarts can always recover in-progress work from persisted checkpoints.
+
+---
+
+## Production gaps checklist
+
+Before go-live, address each of these items:
+
+<Warning>
+  Never expose Flux through a route that bypasses App Service Authentication when `FLUX_AUTH_MODE=entra`. The application trusts the `X-MS-CLIENT-PRINCIPAL` header only because App Service removes external copies and injects its validated value. A bypassed route allows unauthenticated or spoofed access.
+</Warning>
+
+1. **Validate Easy Auth end-to-end.** Confirm app-role assignments, managed identity, and subscription RBAC are working in the target App Service before opening access to users.
+
+2. **Eliminate bypass routes.** Ensure the application cannot be reached through any network path that bypasses Easy Auth — including internal routes, SCM hostnames, and IP-restricted origins.
+
+3. **Connect health monitoring.** Wire the `/api/health` and `/api/operations/health` (admin) endpoints to an approved notification destination for operational alerting.
+
+4. **Monitor LogicMonitor warm-up.** Track the incremental LogicMonitor collector through its first 14-day rolling-history warm-up and tune `FLUX_LOGICMONITOR_METRIC_BATCH_SIZE` against observed API rate limits.
+
+5. **Assign a non-human identity for smoke tests.** Before enabling the authenticated branch of the production smoke script in CI, assign a dedicated `Flux.Reader` service principal — do not use a human account.
+
+6. **Complete AI model procurement review.** Before wider use of Flux Intelligence, complete model-service procurement and privacy review, adversarial evaluation, stakeholder acceptance criteria, distributed budget enforcement, and service-failover design.

@@ -1,0 +1,109 @@
+---
+title: "Database Backup and Recovery"
+sidebarTitle: "Backup & Recovery"
+description: "Flux backs up the DuckDB analytical store to Azure Blob Storage after successful syncs. Recovery from a backup can be triggered automatically at startup or manually via the recovery API."
+---
+
+Flux provides automated DuckDB backup to Azure Blob Storage and supports recovery at startup. After each successful sync the worker checkpoints the DuckDB file and uploads it to the configured Blob container. In the event of database corruption or accidental data loss, Flux can automatically restore the latest valid backup when it starts up.
+
+## Backup configuration
+
+Set the following environment variables to enable backup. The managed identity assigned to the App Service must have **Blob Data Contributor** (or equivalent write) access to the target container.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_BACKUP_STORAGE_ACCOUNT_URL` | *(empty — backup disabled)* | Blob service URL, e.g. `https://<account>.blob.core.windows.net`. When unset, backup is disabled. |
+| `FLUX_BACKUP_CONTAINER` | `flux-backups` | Private Blob container name for database backups |
+| `FLUX_BACKUP_RETENTION_DAYS` | `30` | Age after which Flux-owned backup blobs (prefix `duckdb/flux-`) are pruned |
+
+<Note>
+Backup uses `DefaultAzureCredential`. On App Service this resolves to the system-assigned or user-assigned managed identity. For a user-assigned identity, also set `FLUX_MANAGED_IDENTITY_CLIENT_ID`.
+</Note>
+
+## When backups run
+
+After each successful sync the worker:
+
+1. Issues a `CHECKPOINT` to flush the DuckDB WAL to the main file.
+2. Copies the checkpointed `.duckdb` file to a temporary directory.
+3. Uploads the copy to the configured Blob container under the prefix `duckdb/` with the naming pattern `flux-<YYYYMMDDTHHmmssZ>.duckdb`.
+4. Prunes any blobs under `duckdb/flux-` whose `last_modified` timestamp is older than `FLUX_BACKUP_RETENTION_DAYS`.
+
+The backup blob is uploaded with `overwrite=False`. Each sync produces a distinct timestamped blob rather than overwriting a single slot.
+
+## Analytics snapshot architecture
+
+For multi-instance deployments, Flux supports an analytics snapshot tier that separates the singleton writer from read-only web-process consumers:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_ANALYTICS_SNAPSHOT_MODE` | `direct` | `direct` — web process reads the mutable database (development default). `snapshot` — web process serves reads from published immutable snapshots and never opens the writer database. |
+| `FLUX_ANALYTICS_SNAPSHOT_PUBLISH` | `false` | When `true`, the worker publishes a validated immutable snapshot after each data-writing job. |
+| `FLUX_SNAPSHOT_STORAGE_ACCOUNT_URL` | *(empty)* | Blob account for snapshot storage (production); empty uses the local directory. |
+| `FLUX_SNAPSHOT_CONTAINER` | `flux-analytics-snapshots` | Blob container for immutable analytical snapshots |
+| `FLUX_SNAPSHOT_LOCAL_DIRECTORY` | `./data/snapshots` | Local fallback snapshot directory |
+| `FLUX_SNAPSHOT_CACHE_DIRECTORY` | `./data/snapshot-cache` | API-instance snapshot cache; prefer instance-local storage (`/tmp`) over `/home` |
+| `FLUX_ANALYTICS_SNAPSHOT_REFRESH_SECONDS` | `60` | How often the web process checks for a newer published snapshot |
+| `FLUX_ANALYTICS_SNAPSHOT_RETENTION` | `5` | Number of recent snapshots to retain |
+| `FLUX_ANALYTICS_SNAPSHOT_MIN_INTERVAL_SECONDS` | `600` | Coalesces publication bursts; `0` disables. Manual CLI publication bypasses this. |
+| `FLUX_ANALYTICS_SNAPSHOT_DAILY_RETENTION_DAYS` | `14` | Retains the newest snapshot per UTC day for this many days (the analytical backup tier) |
+
+In snapshot mode the web process is a **read-only consumer**; the singleton writer publishes immutable snapshots after each successful job. This eliminates the cross-process DuckDB write lock contention for multi-instance App Service plans.
+
+<Note>
+The analytics snapshot daily retention tier (`FLUX_ANALYTICS_SNAPSHOT_DAILY_RETENTION_DAYS`) is separate from the legacy per-sync backup controlled by `FLUX_BACKUP_*`. When snapshot publishing is enabled, the per-UTC-day snapshot tier serves as the analytical backup.
+</Note>
+
+## Startup recovery
+
+Set `FLUX_RECOVER_DATABASE_FROM_LATEST_BACKUP=true` to trigger automatic recovery at startup. When this flag is set, Flux:
+
+<Steps>
+  <Step title="Validate current database">
+    Flux opens the existing database read-only and checks that the minimum required tables (`azure_integration`, `resource_snapshots`) are present and that `resources_current` contains at least one row. If the database is valid, no recovery is performed.
+  </Step>
+  <Step title="Identify candidates">
+    If validation fails, Flux lists up to 8 backup blobs from the container (prefix `duckdb/flux-`, non-zero size), sorted by `last_modified` descending.
+  </Step>
+  <Step title="Download and validate">
+    Flux downloads each candidate to a temporary file and runs the same validation check. Candidates that fail validation are discarded and the next one is tried.
+  </Step>
+  <Step title="Atomic replacement">
+    Once a valid backup is found, Flux:
+    - Acquires the cross-process writer lock (up to 180-second timeout).
+    - Renames the damaged database to `flux.duckdb.corrupt-<timestamp>` (preserving it for post-mortem).
+    - Renames any `.wal` file alongside it.
+    - Atomically renames the validated backup into place.
+  </Step>
+  <Step title="Log outcome">
+    Flux logs the restored backup name, the path of the preserved damaged file, and the resource count from the restored database.
+  </Step>
+</Steps>
+
+<Warning>
+Recovery is refused if the database file does not exist at `FLUX_DUCKDB_PATH`. Recovery restores only when the existing file fails validation — it does not replace a healthy database.
+</Warning>
+
+## Manual restore
+
+If you need to restore a specific backup outside of the automatic startup flow:
+
+1. Download the desired backup blob from the `duckdb/` prefix in your backup container.
+2. Stop the Flux App Service (or all processes that hold the DuckDB writer lock).
+3. Replace the file at `FLUX_DUCKDB_PATH` (default `data/flux.duckdb`) with the downloaded backup.
+4. Remove any stale `.wal` file alongside it.
+5. Restart Flux.
+
+<Tip>
+Test database restoration regularly before relying on backups in production. Verify that the restored database passes the Flux health check at `GET /api/health` and that the Administration page shows expected source row counts.
+</Tip>
+
+## Identity requirements
+
+| Operation | Required permission |
+|---|---|
+| Upload backup | Blob Data Contributor on `FLUX_BACKUP_CONTAINER` |
+| Prune old blobs | Blob Data Contributor on `FLUX_BACKUP_CONTAINER` |
+| Download for recovery | Blob Data Reader on `FLUX_BACKUP_CONTAINER` |
+
+Recovery uses `ManagedIdentityCredential` directly (not `DefaultAzureCredential`). Ensure the managed identity has at minimum read access to the backup container for the recovery path, and write access for the backup upload path.

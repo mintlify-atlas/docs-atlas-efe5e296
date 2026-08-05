@@ -1,0 +1,92 @@
+---
+title: "Azure Inventory: Searchable Estate with Drift Detection"
+sidebarTitle: "Inventory"
+description: "Flux maintains a searchable Azure Resource Graph inventory enriched with cost and VM performance summaries. Drift detection identifies consecutive-snapshot changes using median/MAD statistical baselines."
+---
+
+Flux collects your Azure estate through the Azure Resource Graph API and stores each collection as an append-only snapshot in DuckDB. The current estate is always served from `resources_current` — the newest complete snapshot for each configured subscription — so a resource that disappears from a later ARG collection does not linger in the current view. The inventory page presents this current snapshot through a filterable, paginated dashboard with cost and performance enrichment layered on top.
+
+## Inventory view
+
+The inventory table supports the following filters, which can be combined freely:
+
+| Filter | Description |
+|---|---|
+| **Search** | Free-text match against resource name, ID, and resource group |
+| **Resource type** | Filter to a specific Azure resource type (e.g. `microsoft.compute/virtualmachines`) |
+| **Subscription** | Limit to one configured subscription |
+| **Region** | Filter by Azure region |
+| **Virtual tag** | Filter by a virtual tag key/value pair |
+| **Opportunity only** | Show only resources that have at least one Flux or Advisor finding |
+
+Results are paginated with a configurable page size, up to **2,000 resources per request**. The full filtered result set can be exported as **CSV** or **XLSX** using the export button, which applies the same active filters without the pagination limit.
+
+## Enrichment fields
+
+Each resource in the inventory carries standard ARG fields (ID, name, type, subscription, resource group, region, tags) plus the following enrichment columns populated during synchronization:
+
+<CardGroup cols={3}>
+  <Card title="Cost fields" icon="circle-dollar-to-slot">
+    `estimatedMonthlyCost` and `amortizedMonthlyCost` — pulled from the most recent cost snapshot for the resource's subscription.
+  </Card>
+  <Card title="Utilization" icon="chart-line">
+    `utilizationPercent` — the governed CPU p95 value from the most recent telemetry run, with a source field indicating Azure Monitor or LogicMonitor.
+  </Card>
+  <Card title="Opportunity fields" icon="lightbulb">
+    `opportunityKind`, `opportunityReason`, and `estimatedMonthlySavings` — populated when the resource has an active Flux Signals or Advisor finding.
+  </Card>
+</CardGroup>
+
+Enrichment fields are nullable. A resource with no cost snapshot, no telemetry, or no active finding displays empty values rather than zero, making data absence explicit.
+
+## Changes and drift detection
+
+The **Changes** view shows exact consecutive-snapshot inventory diffs. Flux compares each new complete ARG snapshot against the immediately preceding one for each subscription and records the delta. Change types are:
+
+| Change type | Description |
+|---|---|
+| `create` | Resource appeared in the newer snapshot but not the previous one |
+| `delete` | Resource was present in the previous snapshot but absent from the newer one |
+| `resize` | VM or disk SKU changed between snapshots |
+| `retier` | Storage tier or redundancy level changed |
+| `retag` | Resource tags changed |
+| `move` | Resource group or subscription changed |
+| `reconfiguration` | Any other tracked property change (e.g. disk size, IP configuration) |
+
+Each change record includes the resource identity, the before and after field values as evidence, and the snapshot timestamps that bracketed the change.
+
+## Change anomalies
+
+Flux evaluates whether the total volume of changes in a snapshot interval is unusual for that scope. The method is a **median/MAD (median absolute deviation) baseline**:
+
+<Steps>
+  <Step title="Build a baseline">
+    Flux accumulates the per-scope change counts across completed drift intervals. A minimum of `FLUX_DRIFT_MIN_BASELINE_POINTS` intervals (default **5**) must be completed before the scope is eligible for anomaly classification.
+  </Step>
+  <Step title="Compute a robust deviation score">
+    For each new interval, Flux calculates how many MADs the observed change count is from the scope's median. Scores above `FLUX_DRIFT_MAD_THRESHOLD` (default **3**) are flagged as anomalous change volume.
+  </Step>
+  <Step title="Surface the anomaly">
+    Anomalous scopes appear in `/api/changes/anomalies` with the current count, baseline median, MAD score, and the raw interval evidence.
+  </Step>
+</Steps>
+
+The two configuration variables that govern anomaly sensitivity are:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_DRIFT_MIN_BASELINE_POINTS` | `5` | Minimum completed intervals before anomaly classification |
+| `FLUX_DRIFT_MAD_THRESHOLD` | `3` | MAD score required to flag unusual change volume |
+
+Scopes with fewer than `FLUX_DRIFT_MIN_BASELINE_POINTS` completed intervals are reported as **warming up** rather than anomalous or normal.
+
+## Sync schedule
+
+| Source | Schedule |
+|---|---|
+| Azure inventory (ARG + Policy) | Daily at **10:00 UTC** |
+| Azure Advisor | Every **6 hours** at `:45` |
+
+<Note>
+`resources_current` always reflects the newest complete snapshot. If an ARG collection for a subscription completes but returns zero resources (for example, due to a permission failure on a scope), Flux retains the previous successful snapshot rather than replacing it with an empty set — this is the `last-good` retention behavior.
+</Note>

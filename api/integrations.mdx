@@ -1,0 +1,509 @@
+---
+title: "Integration and Administration Endpoints"
+sidebarTitle: "Integrations"
+description: "Manage Azure integration settings, trigger synchronization, inspect cost reconciliation and history, configure budgets, and check operational health with the Flux administration endpoints."
+---
+
+The integration endpoints provide configuration management and operational visibility for Flux administrators. They cover the Azure tenant and subscription scope, on-demand synchronization, cost data completeness ledgers, budget configuration, and the health center that surfaces source, worker, and recommendation status without requiring log access.
+
+---
+
+## GET /api/integrations/azure
+
+**Auth:** `admin`
+
+Returns the current Azure integration settings, including name, tenant ID, auth mode, and the list of configured subscription scopes.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/azure" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Example response
+
+```json
+{
+  "name": "Azure",
+  "tenantId": "00000000-0000-0000-0000-000000000000",
+  "enabled": true,
+  "authMode": "managed_identity",
+  "subscriptions": [
+    {"subscriptionId": "00000000-0000-0000-0000-000000000001", "label": "Production"},
+    {"subscriptionId": "00000000-0000-0000-0000-000000000002", "label": "Development"}
+  ]
+}
+```
+
+---
+
+## PUT /api/integrations/azure
+
+**Auth:** `admin`
+
+Saves Azure integration settings. Changes take effect on the next synchronization.
+
+### Request body (`AzureIntegrationUpdate`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `name` | string | | 1–80 chars, default `Azure` | Display name for the integration |
+| `tenantId` | string | | max 36 chars | Azure tenant GUID |
+| `enabled` | boolean | | default `true` | Whether the integration is active |
+| `authMode` | string | | `local_powershell` or `managed_identity` | Authentication method |
+| `subscriptions` | array | | | List of subscription scopes to collect |
+
+Each subscription scope object:
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `subscriptionId` | string | ✅ | exactly 36 chars | Azure subscription GUID (normalized to lowercase) |
+| `label` | string | | max 100 chars | Friendly display name |
+
+### Example request
+
+```bash
+curl -s -X PUT "https://flux.example.com/api/integrations/azure" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Contoso Azure",
+    "tenantId": "00000000-0000-0000-0000-000000000000",
+    "enabled": true,
+    "authMode": "managed_identity",
+    "subscriptions": [
+      {"subscriptionId": "00000000-0000-0000-0000-000000000001", "label": "Production"},
+      {"subscriptionId": "00000000-0000-0000-0000-000000000002", "label": "Development"}
+    ]
+  }'
+```
+
+---
+
+## POST /api/integrations/azure/sync
+
+**Auth:** `admin`
+
+Starts an on-demand synchronization of inventory, Azure Advisor, Flux Intelligence, and Azure Policy sources. Returns `202 Accepted` immediately; the sync runs asynchronously via the queue-backed worker.
+
+<Note>
+Cost Management is deliberately excluded from this endpoint to avoid competing for the tenant's Cost Management QPU quota. Cost data is collected by its own independently scheduled daily jobs.
+</Note>
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `202` | Sync accepted; returns `{accepted: true, syncId: string}` |
+| `409` | Integration is disabled, or a synchronization is already running |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/integrations/azure/sync" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Example response
+
+```json
+{
+  "accepted": true,
+  "syncId": "sync_20250715_100542"
+}
+```
+
+---
+
+## GET /api/integrations/cost-reconciliation
+
+**Auth:** `reader`
+
+Returns a comparison of current, historical, and commitment coverage per subscription — useful for identifying subscriptions with missing or incomplete cost exports before drawing conclusions from cost totals.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/cost-reconciliation" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/integrations/cost-history
+
+**Auth:** `reader`
+
+Returns the daily cost-history collection ledger: each run's completion state, retry attempts, and per-scope status. Use this to verify that cost data is being collected and to identify scopes that have fallen behind or are retrying.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/cost-history" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/integrations/cost-coverage
+
+**Auth:** `reader`
+
+Returns a day-level completeness ledger showing expected versus ingested days per scope. Useful for identifying coverage gaps before trusting historical cost trends.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/cost-coverage" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/integrations/telemetry-coverage
+
+**Auth:** `reader`
+
+Returns estate telemetry coverage with uncovered VMs ranked by spend. Identifies which VMs lack sufficient telemetry for right-sizing classification, and the cost exposure of those gaps.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/telemetry-coverage" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/integrations/finops-toolkit
+
+**Auth:** `reader`
+
+Returns the imported FinOps Toolkit open-data status: versions, checksums, row counts, and import provenance. Flux uses checksum-pinned Microsoft FinOps Toolkit v14 reference datasets.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/finops-toolkit" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## GET /api/integrations/budget-groups
+
+**Auth:** `reader`
+
+Returns budget groups, each representing a named collection of subscriptions with an annual budget amount and currency.
+
+```bash
+curl -s "https://flux.example.com/api/integrations/budget-groups" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## PUT /api/integrations/budget-groups
+
+**Auth:** `admin`
+
+Saves the full set of budget groups, replacing any previously configured groups.
+
+### Request body (`BudgetGroupsUpdate`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `groups` | array | | Up to 24 budget group objects |
+
+Each budget group (`BudgetGroup`):
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `id` | string | | max 64 chars | Existing group ID for updates; empty to create |
+| `name` | string | ✅ | 1–80 chars | Group display name |
+| `annualAmount` | float | ✅ | > 0 | Annual budget amount |
+| `currency` | string | | max 8 chars, default `USD` | Currency code |
+| `subscriptionIds` | array | | max 200 items | Subscription GUIDs in this group |
+
+### Example request
+
+```bash
+curl -s -X PUT "https://flux.example.com/api/integrations/budget-groups" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "groups": [
+      {
+        "name": "Platform",
+        "annualAmount": 1200000,
+        "currency": "USD",
+        "subscriptionIds": [
+          "00000000-0000-0000-0000-000000000001"
+        ]
+      }
+    ]
+  }'
+```
+
+---
+
+## GET /api/integrations/budgets
+
+**Auth:** `admin`
+
+Returns the configured budget targets — monthly amounts per scope (estate-wide or per subscription).
+
+```bash
+curl -s "https://flux.example.com/api/integrations/budgets" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+---
+
+## PUT /api/integrations/budgets
+
+**Auth:** `admin`
+
+Saves the full set of budget targets, replacing any previously configured targets.
+
+### Request body (`BudgetTargetsUpdate`)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `targets` | array | | Up to 64 budget target objects |
+
+Each target (`BudgetTarget`):
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `scopeType` | string | ✅ | `estate` or `subscription` | Scope granularity |
+| `scopeId` | string | | max 64 chars | Subscription ID if `scopeType` is `subscription`; empty for estate |
+| `monthlyAmount` | float | ✅ | > 0 | Monthly budget amount |
+| `currency` | string | | max 8 chars, default `USD` | Currency code |
+
+### Example request
+
+```bash
+curl -s -X PUT "https://flux.example.com/api/integrations/budgets" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targets": [
+      {"scopeType": "estate", "scopeId": "", "monthlyAmount": 150000, "currency": "USD"},
+      {"scopeType": "subscription", "scopeId": "00000000-0000-0000-0000-000000000001", "monthlyAmount": 100000, "currency": "USD"}
+    ]
+  }'
+```
+
+---
+
+## GET /api/integrations/allocation
+
+**Auth:** `admin`
+
+Returns the current cost allocation configuration: cost-center tags, shared resource values, and unit economics label settings.
+
+---
+
+## PUT /api/integrations/allocation
+
+**Auth:** `admin`
+
+Saves the cost allocation configuration.
+
+### Request body (`AllocationConfigUpdate`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `costCenterTags` | array | | max 8 items | Tag keys used for cost-center allocation |
+| `sharedValues` | array | | max 16 items | Tag values treated as shared infrastructure |
+| `unitTag` | string | | max 128 chars | Tag key for the unit-economics denominator |
+| `unitLabel` | string | | max 128 chars | Display label for the unit denominator |
+
+---
+
+## GET /api/operations/health
+
+**Auth:** `admin`
+
+Returns a consolidated operational health report covering source freshness, worker status, cost completeness, and recommendation health for all sources. Use this endpoint to answer "is the pipeline healthy?" without log access.
+
+### Response areas
+
+| Area | Contents |
+|---|---|
+| Source health | Per-source last-successful collection time, expected cadence, and staleness state |
+| Worker status | Whether the sync worker is active, last heartbeat, and queue depth |
+| Cost completeness | Per-subscription completeness state for actual and amortized cost |
+| Recommendation health | Right-sizing classification coverage and Advisor corroboration rates |
+
+```bash
+curl -s "https://flux.example.com/api/operations/health" \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Example response (truncated)
+
+```json
+{
+  "sources": [
+    {
+      "source": "AzureResourceGraph",
+      "label": "Inventory",
+      "lastSuccess": "2025-07-15T10:05:30Z",
+      "expectedCadenceHours": 24,
+      "stale": false
+    },
+    {
+      "source": "CostManagement",
+      "label": "Cost",
+      "lastSuccess": "2025-07-15T11:12:00Z",
+      "expectedCadenceHours": 24,
+      "stale": false
+    }
+  ],
+  "worker": {
+    "active": true,
+    "lastHeartbeat": "2025-07-15T14:59:50Z",
+    "queueDepth": 0
+  },
+  "costCompleteness": [
+    {"subscriptionId": "00000000-0000-0000-0000-000000000001", "complete": true, "latestDay": "2025-07-13"}
+  ],
+  "recommendationHealth": {
+    "totalVms": 340,
+    "withTelemetry": 318,
+    "coveragePercent": 93.5
+  }
+}
+```
+
+---
+
+## GET /api/operations/pipeline
+
+**Auth:** `admin`
+
+Returns end-to-end data-pipeline status in a single call: sync queue and claim ages, publication currency, staged-apply backlog, shared throttle state, and the active snapshot version. Use this to assess whether the pipeline is moving without requiring log access.
+
+---
+
+## GET /api/operations/slo
+
+**Auth:** `admin`
+
+Returns current SLO evaluations with tracked transition state. Each objective includes its current value, threshold, breach state, and a runbook reference. The flux-alerts job notifies transitions to the configured webhook.
+
+---
+
+## GET /api/admin/jobs
+
+**Auth:** `admin`
+
+Returns the status of all collection jobs, including their last run time, next expected run, and whether they can be triggered on demand. The `triggerSource` field is set for jobs that can be started via `/api/admin/jobs/run`.
+
+---
+
+## POST /api/admin/jobs/run
+
+**Auth:** `admin`
+
+Enqueues an on-demand run for a triggerable source. Returns `202 Accepted`.
+
+Triggerable sources:
+
+| Source | Label |
+|---|---|
+| `inventory` | Azure Resource Graph inventory |
+| `advisor` | Azure Advisor recommendations |
+| `intelligence` | Flux Intelligence enrichment |
+| `policy` | Azure Policy posture |
+
+### Request body (`JobRunRequest`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `source` | string | ✅ | 1–40 chars | One of the triggerable source names above |
+
+### Responses
+
+| Status | Meaning |
+|---|---|
+| `202` | Job enqueued; returns `{accepted: true, syncId, source}` |
+| `400` | Source is not triggerable |
+| `409` | Integration is disabled, or a sync is already running |
+
+```bash
+curl -s -X POST "https://flux.example.com/api/admin/jobs/run" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "advisor"}'
+```
+
+---
+
+## GET /api/admin/ai-config
+
+**Auth:** `admin`
+
+Returns the current AI intelligence configuration: active provider, fast and deep model names, whether an admin override is active, and masked API key status for each provider.
+
+---
+
+## PUT /api/admin/ai-config
+
+**Auth:** `admin`
+
+Saves an AI provider and model override. Takes effect immediately for new requests.
+
+### Request body (`AiIntelligenceConfigUpdate`)
+
+| Field | Type | Required | Constraints | Description |
+|---|---|---|---|---|
+| `provider` | string | ✅ | `deepseek`, `openrouter`, or `foundry` | Provider adapter to activate |
+| `fastModel` | string | | max 200 chars | Override for the fast-profile model name |
+| `deepModel` | string | | max 200 chars | Override for the deep-profile model name |
+
+---
+
+## GET /api/admin/audit
+
+**Auth:** `admin`
+
+Returns the configuration audit log — an ordered list of admin-initiated changes to integration settings, budget targets, virtual tag dimensions, and AI configuration, each with actor attribution and timestamp.
+
+---
+
+## GET /api/admin/database-health
+
+**Auth:** `admin`
+
+Returns internal DuckDB health diagnostics: file size, table row counts, last vacuum, and write-lock contention metrics.
+
+---
+
+## GET /api/admin/retention
+
+**Auth:** `admin`
+
+Returns the configured data-retention windows as a read-only view of retention policies that are otherwise environment-variable only. Useful for compliance audits without requiring shell access.
+
+### Example response
+
+```json
+{
+  "policies": [
+    {
+      "name": "Ask Flux transcripts",
+      "days": 30,
+      "setting": "FLUX_AI_TRANSCRIPT_RETENTION_DAYS",
+      "note": "Prompts and validated replies for quality review. 0 disables storage."
+    },
+    {
+      "name": "Ask Flux usage metadata",
+      "days": 30,
+      "setting": "FLUX_AI_USAGE_RETENTION_DAYS",
+      "note": "Pseudonymous token counts, latency and cost. No prompt content."
+    },
+    {
+      "name": "LogicMonitor metric history",
+      "days": 30,
+      "setting": "FLUX_LOGICMONITOR_METRIC_RETENTION_DAYS",
+      "note": "Checkpointed performance samples backing right-sizing evidence."
+    },
+    {
+      "name": "Analytical snapshots",
+      "days": null,
+      "setting": "tiered retention",
+      "note": "Newest 5 kept, then one per day for 14 days."
+    }
+  ]
+}
+```

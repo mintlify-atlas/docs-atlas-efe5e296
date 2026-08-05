@@ -1,0 +1,123 @@
+---
+title: "VM Right-Sizing: Multi-Source Telemetry and Planning Boards"
+sidebarTitle: "Right-Sizing"
+description: "Flux classifies VMs as idle or resize candidates by reconciling Azure Monitor and LogicMonitor telemetry with Azure Advisor corroboration. Planning boards turn candidates into purchase decisions."
+---
+
+Flux provides deterministic VM right-sizing backed by governed telemetry, not heuristics alone. Every VM in your estate receives an explicit coverage state that tells you whether Flux has enough evidence to make a classification — and if not, exactly what is missing. Idle candidates require complete CPU, memory, and bidirectional network evidence before Flux will recommend deallocation. Resize candidates additionally require Azure Advisor to corroborate the target SKU; Flux will not invent a resize target. The result is a conservative, explainable set of candidates rather than an optimistically large list.
+
+## Coverage states
+
+Before classifying a VM, Flux determines its **coverage state**:
+
+| State | Meaning |
+|---|---|
+| `no-data` | No successful telemetry observation for this VM exists |
+| `warming-up` | Telemetry is present but the evidence window is shorter than `FLUX_RIGHTSIZING_MIN_WINDOW_DAYS` or CPU coverage is below `FLUX_RIGHTSIZING_MIN_COVERAGE_PERCENT` |
+| `partial` | CPU is covered but network or memory metrics are missing |
+| `conflicting` | Azure Monitor and LogicMonitor disagree materially on CPU p95 (gap > `FLUX_RIGHTSIZING_CPU_DISAGREEMENT_PERCENT`) |
+| `actionable` | All required metrics are present, the evidence window is sufficient, and sources agree |
+
+A VM in any state other than `actionable` will not be classified as a candidate. Coverage state is shown on the right-sizing recommendation list and in the resource detail view so you can see exactly which VMs are blocked and why.
+
+## Classification criteria
+
+Flux applies two classification paths:
+
+### Idle (shutdown candidate)
+
+A VM is classified as an idle candidate when **all** of the following are true:
+
+- CPU p95 ≤ `FLUX_RIGHTSIZING_IDLE_CPU_P95` (default **5%**)
+- CPU maximum ≤ `FLUX_RIGHTSIZING_IDLE_CPU_MAXIMUM` (default **20%**) — this protects periodic workloads that burst briefly
+- Network in p95 ≤ `FLUX_RIGHTSIZING_IDLE_NETWORK_P95_BYTES` (default **52,428,800 bytes / 50 MB**)
+- Network out p95 ≤ same threshold
+- Memory p95 < `FLUX_RIGHTSIZING_MEMORY_REVIEW_PERCENT` (default **80%**) — a high-memory VM is not idle
+
+The target action is `Deallocate VM`. Flux does not recommend deletion.
+
+### Resize candidate
+
+A VM is classified as a resize candidate when **all** of the following are true:
+
+- CPU p95 ≤ `FLUX_RIGHTSIZING_REVIEW_CPU_P95` (default **30%**)
+- Memory p95 < `FLUX_RIGHTSIZING_MEMORY_REVIEW_PERCENT` (default **80%**)
+- Azure Advisor supplies a target SKU for this VM — Flux requires Advisor corroboration and will not generate a resize target independently
+- The VM does not meet the stricter idle criteria above
+
+If CPU p95 is at or below the resize threshold but no Advisor target SKU is available, Flux returns `rightsizing_review` / `target_rate_unavailable` rather than inventing a recommendation.
+
+## Multi-source reconciliation
+
+When both Azure Monitor and LogicMonitor have telemetry for the same VM, Flux reconciles them using a **conservative approach**:
+
+<Steps>
+  <Step title="Compute per-source values">
+    CPU p95, CPU maximum, memory p95, and network p95 are computed independently from each source's governed summary window.
+  </Step>
+  <Step title="Check for material disagreement">
+    If the CPU p95 values from the two sources differ by more than `FLUX_RIGHTSIZING_CPU_DISAGREEMENT_PERCENT` (default **20 percentage points**), the VM is routed to `conflicting` / `needs_review` status instead of being averaged. Averaging disagreeing sources could mask a real workload pattern.
+  </Step>
+  <Step title="Use conservative values">
+    When sources agree within the threshold, the higher (more conservative) value from each metric is used. This means a VM is less likely to be misclassified as idle when one source captures a burst that the other missed.
+  </Step>
+</Steps>
+
+## Telemetry requirements
+
+| Requirement | Default | Variable |
+|---|---|---|
+| Minimum evidence window | **14 days** | `FLUX_RIGHTSIZING_MIN_WINDOW_DAYS` |
+| Minimum CPU sample coverage | **70%** | `FLUX_RIGHTSIZING_MIN_COVERAGE_PERCENT` |
+
+Coverage is measured as the proportion of expected hourly CPU observations that are actually present in the governed summary. A VM with sporadic collection (e.g. monitoring agent restarts) will warm up more slowly even if it has been observed for 14 calendar days.
+
+<Tip>
+Set `FLUX_RIGHTSIZING_MIN_WINDOW_DAYS` and `FLUX_RIGHTSIZING_MIN_COVERAGE_PERCENT` to match your monitoring cadence. If your monitoring agent has known collection gaps, a stricter coverage threshold prevents premature classification.
+</Tip>
+
+## Configuration reference
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_RIGHTSIZING_MIN_WINDOW_DAYS` | `14` | Required telemetry evidence window in days |
+| `FLUX_RIGHTSIZING_MIN_COVERAGE_PERCENT` | `70` | Minimum CPU sample coverage for classification |
+| `FLUX_RIGHTSIZING_IDLE_CPU_P95` | `5` | Maximum CPU p95 for an idle candidate |
+| `FLUX_RIGHTSIZING_IDLE_CPU_MAXIMUM` | `20` | Peak CPU guardrail protecting periodic workloads |
+| `FLUX_RIGHTSIZING_IDLE_NETWORK_P95_BYTES` | `52428800` | Maximum hourly p95 per network direction (50 MB) |
+| `FLUX_RIGHTSIZING_REVIEW_CPU_P95` | `30` | CPU p95 headroom threshold for resize review |
+| `FLUX_RIGHTSIZING_MEMORY_REVIEW_PERCENT` | `80` | Memory p95 guardrail that prevents automatic action |
+| `FLUX_RIGHTSIZING_CPU_DISAGREEMENT_PERCENT` | `20` | Maximum CPU p95 difference before sources require review |
+
+## Planning boards
+
+Right-sizing candidates feed into **planning boards** — human-owned workspaces that turn telemetry-backed findings into purchase decisions (reservations and savings plans).
+
+<CardGroup cols={2}>
+  <Card title="System board" icon="robot">
+    Flux regenerates the system board from governed evidence every **72 hours**. It represents the current deterministic classification of your fleet. Planners should copy the system board before modifying it — the next scheduled regeneration will not overwrite human boards.
+  </Card>
+  <Card title="Human boards" icon="user">
+    Planners create copies of the system board (or new empty boards) and then make placement decisions, adjust purchase assumptions, and record rationale. The decision log tracks all changes. Human boards are never overwritten by scheduled regeneration.
+  </Card>
+</CardGroup>
+
+The right-sizing proposal regeneration runs as a due-check WebJob **daily at 04:05 UTC**: if the system board is older than 72 hours, it is regenerated. Administrators can also force an immediate regeneration from Administration without waiting for the scheduled job.
+
+<Note>
+The Ask Flux assistant can only **create new empty planning boards** (via the `create_rightsizing_board` tool, after explicit user confirmation). It cannot modify existing boards, change placements, or alter purchase assumptions. Those actions remain human-owned.
+</Note>
+
+## LogicMonitor integration
+
+Flux integrates with LogicMonitor as a second telemetry source alongside Azure Monitor:
+
+| Aspect | Detail |
+|---|---|
+| **Authentication** | Bearer token resolved from Azure Key Vault at runtime; never stored in environment variables or pipeline settings |
+| **Device discovery** | Independent six-hour WebJob at `:10` matches LogicMonitor devices to ARG resource IDs |
+| **Metric collection** | Incremental 30-minute WebJob, collecting `FLUX_LOGICMONITOR_METRIC_BATCH_SIZE` (default 12) least-recently-checkpointed devices per run |
+| **Raw sample retention** | 30 days (`FLUX_LOGICMONITOR_METRIC_RETENTION_DAYS`) |
+| **Rolling summary window** | 14 days (`FLUX_LOGICMONITOR_METRIC_HISTORY_DAYS`) |
+| **Checkpoints** | Per-device progress is stored in `telemetry_collection_checkpoints` so later runs resume without re-reading history |
+| **Metrics collected** | CPU, memory, disk (up to `FLUX_LOGICMONITOR_MAXIMUM_INSTANCES` instances per datasource), and network |

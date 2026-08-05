@@ -1,0 +1,227 @@
+---
+title: "Continuous Delivery with Azure Pipelines"
+sidebarTitle: "CI/CD"
+description: "Flux ships via Azure Pipelines using workload-identity federation. Commits to main trigger build, test, and deployment to Azure App Service — no publish profiles or secrets in the repository."
+---
+
+Flux uses Azure Pipelines for CI/CD with workload-identity federation — no client secrets, publish profiles, or personal access tokens are stored in the repository. Every commit and pull request targeting `main` triggers validation; successful `main` builds proceed through a build-and-test stage, package a versioned ZIP artifact, and deploy to the Linux App Service through a workload-identity service connection. Post-deploy verification confirms the health endpoint reaches the Entra sign-in boundary before the pipeline completes.
+
+## Pipeline overview
+
+The pipeline has two stages:
+
+| Stage | Trigger | Purpose |
+|---|---|---|
+| **Build** | Every commit and PR targeting `main` | Install dependencies, type-check and build React, run Python tests, compile-check the API, vendor production wheels, produce ZIP artifact |
+| **Deploy** | Successful build on `main` only | Quiesce DuckDB writers, migrate persistent storage, ZIP-deploy to Linux App Service, apply non-secret settings, verify health and worker readiness |
+
+```yaml
+trigger:
+  branches:
+    include:
+      - main
+
+pr:
+  branches:
+    include:
+      - main
+```
+
+---
+
+## Pipeline variables
+
+These variables must be set in the Azure Pipelines pipeline configuration for your environment. They are referenced throughout the YAML as `$(variableName)`.
+
+| Variable | Example value | Purpose |
+|---|---|---|
+| `azureServiceConnection` | `FluxFinOps-Prod-WIF` | Workload-identity federation service connection for Azure CLI and deployment tasks |
+| `webAppName` | `FluxFinOps` | Target App Service name |
+| `webAppHostName` | `your-app.azurewebsites.net` | Public hostname used by the post-deploy health check |
+| `webAppScmHostName` | `your-app.scm.azurewebsites.net` | SCM/Kudu hostname used for DuckDB quiesce and worker readiness |
+| `resourceGroupName` | `your-rg` | Resource group containing the App Service |
+| `artifactName` | `fluxfinops` | Name of the published pipeline artifact (ZIP file) |
+| `pythonVersion` | `3.12` | Python version for build agent and runtime stack |
+| `nodeVersion` | `22.x` | Node.js version for frontend build |
+
+<Note>
+  The service connection (`azureServiceConnection`) must use workload identity federation and have deployment access scoped to the FluxFinOps App Service only. It should not carry subscription-owner or broad contributor rights.
+</Note>
+
+---
+
+## Build stage
+
+<Steps>
+  <Step title="Install and build the React frontend">
+    The pipeline uses the locked `package-lock.json` for a reproducible install, runs the TypeScript compiler for type checking, and produces the production bundle in `frontend/dist/`:
+
+    ```bash
+    npm ci
+    npm run lint     # TypeScript type-check
+    npm run build    # Vite production build → frontend/dist/
+    ```
+  </Step>
+
+  <Step title="Install Python dependencies and run tests">
+    The pipeline installs the full requirements, runs the test suite, compiles every Python source file, and imports the FastAPI application object to catch name-resolution errors that `compileall` misses:
+
+    ```bash
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
+    python -m unittest discover -s tests -v
+    python -m compileall -q app.py api
+    python -c "from api.main import app"
+    ```
+
+    The final import step catches the class of breakage — a model class or database method referenced but not committed — that let a broken commit reach production.
+  </Step>
+
+  <Step title="Vendor portable production Python wheels">
+    The artifact must work on the App Service Linux container and on Linux WebJob hosts without a build environment. The pipeline installs `manylinux_2_28_x86_64`-compatible wheels directly into the artifact tree:
+
+    ```bash
+    python -m pip install \
+      --target "$(Build.ArtifactStagingDirectory)/app/.python_packages/lib/site-packages" \
+      --platform manylinux_2_28_x86_64 \
+      --platform manylinux2014_x86_64 \
+      --platform manylinux_2_17_x86_64 \
+      --implementation cp \
+      --python-version 3.12 \
+      --abi cp312 \
+      --only-binary=:all: \
+      -r requirements.txt
+    ```
+
+    The vendor directory is cleared at the start of this step so a package upgrade cannot leave a mixed FastAPI module (routing from one release, utilities from another) that fails at App Service startup.
+  </Step>
+
+  <Step title="Package and publish the ZIP artifact">
+    The staged tree — application source, `frontend/dist/`, `.python_packages/`, and documentation — is zipped without the root folder and published as a versioned pipeline artifact:
+
+    ```yaml
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: $(Build.ArtifactStagingDirectory)/app
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: $(Build.ArtifactStagingDirectory)/$(artifactName).zip
+
+    - task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: $(Build.ArtifactStagingDirectory)/$(artifactName).zip
+        artifact: $(artifactName)
+    ```
+
+    The main container and Linux WebJob hosts consume the same artifact, so all Python imports resolve identically regardless of which host runs the code.
+  </Step>
+</Steps>
+
+---
+
+## Deployment
+
+The Deploy stage runs only on successful builds of the `main` branch. It performs a coordinated deployment that protects the live DuckDB database and verifies operational readiness before the pipeline succeeds.
+
+**Quiesce DuckDB writers** — before deploying, the pipeline places a deployment-quiesce marker on the SCM VFS and restarts the App Service. It then polls until all governed DuckDB jobs have released their file locks (up to 10 minutes). This prevents a deployment from racing an active write.
+
+**Migrate persistent storage** — on first deploy, if DuckDB exists at the legacy `wwwroot/data/flux.duckdb` path, the pipeline copies it to `/home/data/flux.duckdb` (persistent storage, outside `wwwroot`) and enables `WEBSITE_RUN_FROM_PACKAGE=1` so future deploys mount the ZIP read-only.
+
+**ZIP deploy to Linux App Service:**
+
+```yaml
+- task: AzureWebApp@1
+  inputs:
+    azureSubscription: $(azureServiceConnection)
+    appType: webAppLinux
+    appName: $(webAppName)
+    resourceGroupName: $(resourceGroupName)
+    runtimeStack: PYTHON|3.12
+    startUpCommand: python app.py
+    package: $(Pipeline.Workspace)/$(artifactName)/$(artifactName).zip
+    deploymentMethod: zipDeploy
+```
+
+**Apply non-secret settings (additive)** — `az webapp config appsettings set` is additive: it updates only the named keys and preserves all others, including Key Vault references for `FLUX_DEEPSEEK_API_KEY`, `LM_BEARER_TOKEN`, and `FLUX_WIKI_API_TOKEN` that are provisioned out-of-band. Key production settings applied on every deploy include:
+
+```bash
+PYTHONPATH="/home/site/wwwroot:/home/site/wwwroot/.python_packages/lib/site-packages"
+PYTHONUNBUFFERED="1"
+FLUX_DUCKDB_PATH="/home/data/flux.duckdb"
+WEBSITE_RUN_FROM_PACKAGE="1"
+FLUX_SYNC_WORKER_MODE="external"
+FLUX_COST_MANAGEMENT_MAX_RETRIES="5"
+FLUX_COST_MANAGEMENT_REQUEST_DELAY_SECONDS="20"
+FLUX_COST_MANAGEMENT_CLIENT_TYPE="FluxFinOps"
+FLUX_INTELLIGENCE_AI_ENABLED="true"
+FLUX_AI_PROVIDER="deepseek"
+```
+
+**Resume DuckDB writers** — always runs, even if a prior step fails. Removes the quiesce marker so scheduled jobs can resume.
+
+---
+
+## Post-deploy smoke test
+
+After deployment, the pipeline verifies that the protected health endpoint redirects unauthenticated requests to the Entra sign-in boundary:
+
+```bash
+url="https://$(webAppHostName)/api/health"
+for attempt in {1..24}; do
+  status="$(curl --silent --show-error \
+    --output /dev/null \
+    --write-out '%{http_code}' \
+    --max-time 15 \
+    "$url" || true)"
+  if [ "$status" = "302" ] || [ "$status" = "401" ]; then
+    echo "FluxFinOps is running behind Microsoft Entra authentication."
+    exit 0
+  fi
+  echo "Health attempt ${attempt}: HTTP ${status:-unavailable}"
+  sleep 5
+done
+echo "FluxFinOps did not become healthy within two minutes."
+exit 1
+```
+
+An HTTP `302` (redirect to Entra sign-in) or `401` confirms that Easy Auth is protecting the endpoint. Any other status — including `200` without authentication — fails the pipeline.
+
+The pipeline also verifies App Service operational readiness: `state=Running`, `httpsOnly=true`, a non-empty managed identity principal, `FLUX_SYNC_WORKER_MODE=external`, and the continuous sync worker in `Running`, `Initializing`, or `InactiveInstance` state.
+
+---
+
+## Production schedules
+
+Flux uses independent scheduled WebJobs for each data source. All jobs enqueue focused `sync_runs` requests rather than launching competing DuckDB writers — the singleton continuous worker serializes all persistence.
+
+| Schedule | Job | Description |
+|---|---|---|
+| Daily 10:00 UTC | Inventory + Policy | Azure Resource Graph inventory and Azure Policy posture |
+| Daily 10:30 UTC | Intelligence | Flux Intelligence rule packs and governed findings |
+| Daily 11:00 UTC | Cost Management | Actual and amortized month-to-date cost per subscription |
+| Daily 12:30 UTC | Cost history + anomalies | Daily cost backfill (90 days initial, 14-day rolling), anomaly evaluation |
+| Every 6 hours | FOCUS ingestion | Idempotent FOCUS v1.0 cost-export manifest ingestion |
+| Every 6 hours at `:45` | Azure Advisor | Active Cost and Performance recommendations via ARG |
+| Every 6 hours at `:10` | LogicMonitor discovery | Identity discovery and device matching |
+| Every 6 hours at `:15` | Azure Monitor | Rolling 14-day VM CPU, network, and disk telemetry summaries |
+| Every 30 minutes | LogicMonitor metrics | Rotating, checkpointed incremental metric collection |
+| Every 6 hours | Retail prices | Discover new Advisor SKU keys, refresh cached Microsoft retail rates |
+| Weekly Sunday 03:00 UTC | FinOps Toolkit | Checksum-pinned Microsoft FinOps Toolkit v14 open data |
+| Daily 04:05 UTC | Right-sizing due-check | Regenerate right-sizing proposal from governed evidence (if >72 hours old) |
+
+<Note>
+  The cost-history WebJob backfills 90 days on the first successful collection for a new subscription/cost-type scope, then refreshes only the most recent 14 days on subsequent runs. An automated Cost Details fallback fills checkpointed calendar months when the Query API persistently fails for a scope — at most 4 reports per daily run.
+</Note>
+
+---
+
+## Service connection requirements
+
+The `azureServiceConnection` pipeline variable must reference a service connection that:
+
+- Uses **workload identity federation** — no client secret or certificate.
+- Has deployment access **scoped to the FluxFinOps App Service** only — not subscription-owner or broad contributor rights.
+- Can call `az webapp restart`, `az webapp config appsettings set`, and `az webapp show` for the target resource group.
+- Can reach the SCM/Kudu hostname (`*.scm.azurewebsites.net`) for DuckDB quiesce and WebJob status checks.
+
+No publish profile, client secret, or PAT belongs in the repository or in pipeline YAML.

@@ -1,0 +1,267 @@
+---
+title: "Flux REST API Overview"
+sidebarTitle: "Overview"
+description: "Flux exposes a FastAPI REST API at /api. Interactive Swagger docs live at /docs. All endpoints require authentication except /api/health. Covers base URL, versioning, and the full endpoint index."
+---
+
+Flux exposes a **FastAPI REST API (version 2.0.0)** mounted at `/api`. The same process that serves the React frontend also serves the API, so no separate backend port is needed. Interactive Swagger documentation is automatically generated and available at `/docs`. Every route except `/api/health` requires an authenticated session.
+
+## Base URL
+
+The API is served by the same process as the React frontend on port `8765` by default.
+
+| Environment | Base URL |
+|---|---|
+| Local development | `http://127.0.0.1:8765` |
+| Vite dev proxy | `http://localhost:5173` (proxied to `8765`) |
+| App Service | `https://<your-app>.azurewebsites.net` |
+
+The host and port are controlled by the `FLUX_HOST` and `FLUX_PORT` environment variables.
+
+## Authentication
+
+All authenticated routes require a valid session. In production, Flux uses **Microsoft Entra Easy Auth** — App Service validates the token and injects claims that Flux decodes into `reader` or `admin` roles. In development, a **mock administrator session** is active with no Entra configuration required.
+
+See [Authentication](/api/authentication) for the full identity model, role definitions, environment variables, and session response shape.
+
+## Response Format
+
+All endpoints return **JSON** unless explicitly noted:
+
+- **JSON** — all standard data endpoints
+- **CSV** — export endpoints (filterable, injection-safe with `'` prefix guard)
+- **XLSX** — export endpoints that accept `?format=xlsx` (includes a Metadata sheet with generation time, snapshot version, and active filters)
+
+## Error Responses
+
+| Status | Condition |
+|---|---|
+| `401 Unauthorized` | Missing or unauthenticated session |
+| `402 Payment Required` | Intelligence budget exceeded |
+| `403 Forbidden` | Authenticated but insufficient role |
+| `404 Not Found` | Resource not found (anomaly, opportunity, board, etc.) |
+| `409 Conflict` | Synchronization already running, or protected board conflict |
+| `422 Unprocessable Entity` | Pydantic validation error or invalid query parameter |
+| `503 Service Unavailable` | DuckDB writer is busy (`DatabaseBusyError`) — response includes `Retry-After: 15` and a `waitedSeconds` field |
+
+<Note>
+When DuckDB is locked by a long-running synchronization write, all analytical read endpoints return `503` with a `Retry-After` header rather than hanging indefinitely. Retry after the indicated number of seconds.
+</Note>
+
+---
+
+## Endpoint Index
+
+### Health & Session
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/health` | Runtime, database, and auth-mode health | None |
+| `GET` | `/api/session` | Current Entra identity, roles, permissions, and data currency | None |
+
+### Inventory & Changes
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/overview` | Dashboard metrics and chart series | Reader |
+| `GET` | `/api/inventory` | Filtered, paginated current inventory | Reader |
+| `GET` | `/api/inventory/export` | Full filtered spreadsheet-safe inventory export (CSV or XLSX) | Reader |
+| `GET` | `/api/changes` | Filtered, paginated latest inventory changes | Reader |
+| `GET` | `/api/changes/anomalies` | Current change-volume baselines and anomalies | Reader |
+
+### Cost Anomalies
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/cost/anomalies` | Filtered daily cost anomalies, baseline evidence, and trend | Reader |
+| `GET` | `/api/cost/anomalies/export` | Filtered, spreadsheet-safe anomaly export (CSV) | Reader |
+| `GET` | `/api/cost/anomalies/contributors` | Previous-week service/resource contributors for a specific anomaly | Reader |
+| `PUT` | `/api/cost/anomalies/review` | Update anomaly investigation status and notes | Admin |
+
+### Reports
+
+#### Cost & FOCUS
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/cost` | Native cost summary, breakdowns, and forecast | Reader |
+| `GET` | `/api/reports/cost/export` | Filtered resource-level Cost Summary export (CSV or XLSX) | Reader |
+| `GET` | `/api/reports/focus-cost` | Governed FOCUS v1.0 charge-level investigation, coverage, and lineage | Reader |
+| `GET` | `/api/reports/focus-analytics` | FOCUS analytics summary | Reader |
+
+#### Workload & Governance
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/workload` | Native opportunity and retirement portfolio | Reader |
+| `GET` | `/api/reports/workload/retirement/export` | Retirement candidate CSV | Reader |
+| `GET` | `/api/reports/governance` | Azure Policy compliance posture | Reader |
+
+#### Catalog
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/catalog` | Governed read-only measures and dimensions | Reader |
+| `POST` | `/api/reports/catalog/validate` | Validate a report request against approved fields | Reader |
+
+#### Fiscal Outlook
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/fiscal-outlook` | Fiscal year outlook with trend and forecast | Reader |
+| `PUT` | `/api/reports/fiscal-outlook/config` | Save fiscal year and growth assumptions | Admin |
+
+#### Commitments & Savings
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/commitments` | Commitment inventory (reservations and savings plans) | Reader |
+| `GET` | `/api/reports/savings` | Savings report | Reader |
+
+#### Budgets
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/budgets` | Budget vs. actual report | Reader |
+| `GET` | `/api/integrations/budgets` | Read configured budget targets | Admin |
+| `PUT` | `/api/integrations/budgets` | Save budget targets | Admin |
+| `GET` | `/api/integrations/budget-groups` | Read budget groups | Reader |
+| `PUT` | `/api/integrations/budget-groups` | Save budget groups | Admin |
+
+#### Virtual Tags
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/virtual-tags` | Virtual tag cost report | Reader |
+| `GET` | `/api/reports/virtual-tags/export` | Virtual tag cost export (CSV) | Reader |
+| `GET` | `/api/virtual-tags/dimensions` | List active virtual tag dimensions | Reader |
+| `POST` | `/api/virtual-tags/dimensions` | Create or update a virtual tag dimension | Admin |
+| `DELETE` | `/api/virtual-tags/dimensions/{dimension_key}` | Deactivate a virtual tag dimension | Admin |
+| `GET` | `/api/virtual-tags/rules` | List virtual tag rules | Admin |
+| `POST` | `/api/virtual-tags/rules` | Create or update a virtual tag rule | Admin |
+| `POST` | `/api/virtual-tags/rules/{rule_id}/status` | Enable or disable a virtual tag rule | Admin |
+| `DELETE` | `/api/virtual-tags/rules/{rule_id}` | Deactivate a virtual tag rule | Admin |
+| `POST` | `/api/virtual-tags/preview` | Preview rule matches before saving | Admin |
+| `POST` | `/api/virtual-tags/overrides/import` | Bulk-import virtual tag overrides | Admin |
+| `POST` | `/api/virtual-tags/overrides/rollback` | Roll back a previous override import | Admin |
+| `GET` | `/api/virtual-tags/effective` | Effective virtual tags for a specific resource | Reader |
+
+#### Allocation & Tag Hygiene
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/allocation` | Cost allocation report | Reader |
+| `GET` | `/api/integrations/allocation` | Read allocation configuration | Admin |
+| `PUT` | `/api/integrations/allocation` | Save allocation configuration | Admin |
+| `GET` | `/api/reports/tag-hygiene` | Tag compliance posture | Reader |
+| `GET` | `/api/reports/unit-economics` | Unit economics report | Reader |
+
+#### Executive Summary
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/reports/executive-summary` | Executive summary JSON | Reader |
+| `GET` | `/api/reports/executive-summary/export` | Executive summary XLSX workbook | Reader |
+
+### Evidence
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/evidence/opportunity` | Deterministic opportunity evidence package (Markdown or JSON) | Reader |
+| `GET` | `/api/evidence/cost-anomaly` | Deterministic cost-anomaly evidence package (Markdown or JSON) | Reader |
+
+### Right-Sizing Recommendations
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/recommendations/rightsizing` | Multi-source VM idle and Advisor-corroborated resize results | Reader |
+| `GET` | `/api/recommendations/rightsizing/export` | Filtered right-sizing export (CSV or XLSX) | Reader |
+| `GET` | `/api/recommendations/quality` | Advisor ID, semantic-action, resource-resolution, and actionability reconciliation | Reader |
+| `GET` | `/api/rightsizing/boards` | List planning boards | Reader |
+| `POST` | `/api/rightsizing/boards` | Create a new planning board | Admin |
+| `PUT` | `/api/rightsizing/boards/{board_id}` | Rename a planning board | Admin |
+| `POST` | `/api/rightsizing/boards/{board_id}/primary` | Set the primary planning board | Admin |
+| `DELETE` | `/api/rightsizing/boards/{board_id}` | Delete a planning board | Admin |
+| `POST` | `/api/rightsizing/boards/{board_id}/duplicate` | Duplicate a planning board | Admin |
+| `GET` | `/api/rightsizing/plan` | Right-sizing plan board state | Reader |
+| `GET` | `/api/rightsizing/plan/log` | Decision log for a board | Reader |
+| `PUT` | `/api/rightsizing/plan/bucket` | Save a bucket (SKU/strategy/pricing) | Admin |
+| `DELETE` | `/api/rightsizing/plan/bucket` | Remove a bucket | Admin |
+| `PUT` | `/api/rightsizing/plan/assignments` | Move VMs between buckets | Admin |
+| `POST` | `/api/rightsizing/plan/import` | Import a planning board from a decisions file | Admin |
+| `GET` | `/api/rightsizing/proposal/status` | Flux proposal generation status | Reader |
+| `POST` | `/api/rightsizing/proposal/refresh` | Force Flux proposal regeneration | Admin |
+
+### Opportunities
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/opportunities` | Unified, filterable Azure Advisor and Flux Signals findings | Reader |
+| `GET` | `/api/opportunities/export` | CSV or XLSX export using the active opportunity filters | Reader |
+| `PUT` | `/api/opportunities/lifecycle` | Update opportunity lifecycle status | Admin |
+
+### Azure Integration
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/integrations/azure` | Azure integration settings and status | Admin |
+| `PUT` | `/api/integrations/azure` | Save Azure settings | Admin |
+| `POST` | `/api/integrations/azure/sync` | Start inventory, Advisor, Flux Intelligence, and Policy synchronization | Admin |
+| `GET` | `/api/integrations/finops-toolkit` | Imported Toolkit versions, checksums, and row counts | Reader |
+| `GET` | `/api/integrations/cost-reconciliation` | Compare current, historical, and commitment coverage per subscription | Reader |
+| `GET` | `/api/integrations/cost-history` | Daily cost-history runs, retries, and scope state | Reader |
+| `GET` | `/api/integrations/cost-coverage` | Day-level cost completeness ledger (expected vs. ingested days per scope) | Reader |
+| `GET` | `/api/integrations/telemetry-coverage` | Estate telemetry coverage with uncovered VMs ranked by spend | Reader |
+
+### Intelligence
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/intelligence/status` | Intelligence assistant availability and model configuration | Reader |
+| `POST` | `/api/intelligence/chat` | Submit a conversational request to Flux Intelligence | Reader |
+| `POST` | `/api/intelligence/feedback` | Submit thumbs-up/down feedback for an intelligence request | Reader |
+| `POST` | `/api/intelligence/performance` | Attach browser round-trip and render timing to an intelligence request | Reader |
+| `GET` | `/api/intelligence/review` | Recent prompt, reply, feedback, and stage-timing review | Admin |
+
+### Semantic Layer & Expert Explorer
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/semantic` | Governed semantic layer catalog (models, measures, dimensions) | Reader |
+| `POST` | `/api/semantic/query` | Execute a governed semantic query | Reader |
+| `POST` | `/api/semantic/expert` | Natural language to validated read-only SQL over governed views | Reader |
+
+### Operations Health
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/operations/health` | Source, worker, cost-completeness, and recommendation health | Admin |
+| `GET` | `/api/operations/pipeline` | End-to-end pipeline status: queue age, publication currency, throttle state | Admin |
+| `GET` | `/api/operations/slo` | Current SLO evaluations with tracked transition state | Admin |
+| `GET` | `/api/telemetry/status` | Telemetry collection status summary | Reader |
+| `GET` | `/api/telemetry/resource` | Governed telemetry evidence for a specific resource | Reader |
+| `GET` | `/api/signals/aged-snapshots` | Resources whose inventory snapshot exceeds the configured age threshold | Reader |
+
+### Administration
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/admin/ai-config` | Read AI intelligence provider and model configuration | Admin |
+| `PUT` | `/api/admin/ai-config` | Save AI intelligence provider and model overrides | Admin |
+| `GET` | `/api/admin/jobs` | Source freshness and on-demand triggerable jobs | Admin |
+| `POST` | `/api/admin/jobs/run` | Trigger an on-demand source run (inventory, advisor, intelligence, policy) | Admin |
+| `GET` | `/api/admin/database-health` | DuckDB file and table health | Admin |
+| `GET` | `/api/admin/audit` | Configuration change audit log | Admin |
+| `GET` | `/api/admin/retention` | Read-only view of data retention windows | Admin |
+
+### Remediation
+
+| Method | Route | Purpose | Auth |
+|---|---|---|---|
+| `GET` | `/api/remediation/servicenow-package` | Remediation task package (JSON, CSV, or ServiceNow script) | Admin |
+| `GET` | `/api/remediation/status` | Current remediation task status | Admin |
+| `POST` | `/api/remediation/reconcile` | Reconcile external remediation updates | Admin |
+
+<Note>
+Additional endpoints exist for virtual tags, the governed semantic layer, and remediation workflows. See their respective dedicated pages for full parameter documentation and examples. Interactive API documentation with a live try-it-out interface is also available at `/docs`.
+</Note>

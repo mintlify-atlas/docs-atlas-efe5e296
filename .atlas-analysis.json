@@ -1,0 +1,152 @@
+{
+  "projectType": "saas",
+  "projectName": "Flux",
+  "projectDescription": "Flux is a focused Azure FinOps intelligence workspace that synchronizes Azure inventory, cost, and telemetry into DuckDB and surfaces governed, explainable optimization opportunities through a React dashboard and AI-powered conversational assistant.",
+  "theme": "aspen",
+  "primaryColor": "#6ee385",
+  "lightColor": "#648424",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/overview-dashboard",
+              "features/inventory",
+              "features/cost-management",
+              "features/opportunities",
+              "features/rightsizing",
+              "features/flux-intelligence"
+            ]
+          },
+          {
+            "group": "Deployment & Identity",
+            "pages": [
+              "deployment/azure-app-service",
+              "deployment/entra-managed-identity",
+              "deployment/continuous-delivery"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/virtual-tags",
+              "operations/synchronization",
+              "operations/backup-recovery",
+              "operations/data-model"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "API Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/health-session",
+              "api/inventory-changes",
+              "api/cost-anomalies",
+              "api/reports",
+              "api/opportunities",
+              "api/rightsizing",
+              "api/intelligence",
+              "api/integrations",
+              "api/virtual-tags"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Azure Resource Graph inventory synchronization with snapshot history and enrichment",
+    "Cost Management integration with actual/amortized cost, FOCUS v1.0 charge ledger, and anomaly detection",
+    "Flux Signals — versioned deterministic ARG optimization rule engine with confidence scoring",
+    "Ask Flux — governed conversational AI assistant backed by 19 bounded server-side tools",
+    "Multi-source VM right-sizing using Azure Monitor, LogicMonitor, and Advisor corroboration",
+    "Virtual tags for governed cost allocation without Azure native tag write-back",
+    "Durable inventory drift detection with median/MAD statistical baselines",
+    "Role-based access with Microsoft Entra app roles and App Service managed identity",
+    "Continuous delivery via Azure Pipelines with workload-identity federation",
+    "Rill-compatible semantic layer with governed metrics, measures, and DuckDB dashboards"
+  ],
+  "publicApiSurface": [
+    "GET /api/health",
+    "GET /api/session",
+    "GET /api/overview",
+    "GET /api/inventory",
+    "GET /api/inventory/export",
+    "GET /api/changes",
+    "GET /api/changes/anomalies",
+    "GET /api/cost/anomalies",
+    "GET /api/cost/anomalies/export",
+    "PUT /api/cost/anomalies/review",
+    "GET /api/cost/anomalies/contributors",
+    "GET /api/reports/cost",
+    "GET /api/reports/cost/export",
+    "GET /api/reports/focus-cost",
+    "GET /api/reports/workload",
+    "GET /api/reports/workload/retirement/export",
+    "GET /api/reports/governance",
+    "GET /api/reports/catalog",
+    "POST /api/reports/catalog/validate",
+    "GET /api/reports/fiscal-outlook",
+    "PUT /api/reports/fiscal-outlook/config",
+    "GET /api/reports/commitments",
+    "GET /api/reports/executive-summary/export",
+    "GET /api/reports/budgets",
+    "GET /api/reports/virtual-tags",
+    "GET /api/reports/virtual-tags/export",
+    "GET /api/evidence/opportunity",
+    "GET /api/evidence/cost-anomaly",
+    "GET /api/recommendations/rightsizing",
+    "GET /api/recommendations/quality",
+    "GET /api/opportunities",
+    "GET /api/opportunities/export",
+    "GET /api/integrations/azure",
+    "PUT /api/integrations/azure",
+    "POST /api/integrations/azure/sync",
+    "GET /api/integrations/finops-toolkit",
+    "GET /api/integrations/cost-reconciliation",
+    "GET /api/integrations/cost-history",
+    "GET /api/integrations/budget-groups",
+    "PUT /api/integrations/budget-groups",
+    "GET /api/integrations/budgets",
+    "PUT /api/integrations/budgets",
+    "GET /api/operations/health",
+    "POST /api/intelligence/chat",
+    "POST /api/intelligence/performance",
+    "GET /api/intelligence/review",
+    "GET /api/virtual-tags/rules",
+    "POST /api/virtual-tags/rules",
+    "GET /api/virtual-tags/dimensions",
+    "POST /api/virtual-tags/dimensions",
+    "GET /api/virtual-tags/effective",
+    "POST /api/virtual-tags/preview",
+    "GET /api/semantic",
+    "POST /api/semantic/query",
+    "POST /api/semantic/expert",
+    "GET /api/remediation/servicenow-package",
+    "GET /api/remediation/status",
+    "POST /api/remediation/reconcile"
+  ]
+}

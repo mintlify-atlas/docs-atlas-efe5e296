@@ -1,0 +1,110 @@
+---
+title: "Flux Synchronization: Durable Worker Architecture"
+sidebarTitle: "Synchronization"
+description: "Flux uses a singleton durable sync worker to serialize DuckDB writes. Independent source schedules queue focused requests; each source checkpoint survives partial failures and worker restarts."
+---
+
+Flux synchronization is designed for durability. A singleton worker serializes all DuckDB writes while each data source maintains its own schedule and independent completion checkpoints. A failed scope does not discard successful sibling scopes, and a restarted worker recovers mid-flight work automatically once it acquires the released execution lease.
+
+## Worker modes
+
+The sync worker mode is controlled by the `FLUX_SYNC_WORKER_MODE` environment variable:
+
+| Mode | When used | Behavior |
+|---|---|---|
+| `embedded` | Local development (default) | The consumer loop runs in the same process as the API. Identical to production orchestration logic. |
+| `external` | App Service production | A singleton continuous WebJob claims queued `sync_runs` requests and owns all DuckDB collection. The API enqueues requests and returns immediately. |
+
+In both modes, the worker polls the request queue at the interval set by `FLUX_SYNC_WORKER_POLL_SECONDS` (default `5` seconds).
+
+## Sync request lifecycle
+
+<Steps>
+  <Step title="Enqueue">
+    A scheduled trigger or an administrator calling `POST /api/integrations/azure/sync` writes a `sync_runs` record with status `queued`.
+  </Step>
+  <Step title="Claim">
+    The singleton worker acquires the sync execution lease and transitions the request to `running`. Only one worker can hold the lease at a time. The lease duration is controlled by `FLUX_SYNC_CLAIM_LEASE_SECONDS` (default `900` seconds).
+  </Step>
+  <Step title="Collect">
+    The worker collects each configured source and subscription/cost-type scope. Each scope attempt is recorded in `sync_source_runs`.
+  </Step>
+  <Step title="Checkpoint">
+    After each scope completes successfully, `sync_source_runs` is updated with the completion state. `source_sync_state` advances only for completed scopes — a failed scope does not overwrite the previous good result.
+  </Step>
+  <Step title="Complete">
+    When all scopes finish, the `sync_runs` record is marked complete.
+  </Step>
+</Steps>
+
+**Worker replacement recovery:** if the worker process exits while a request is `running`, the OS releases the execution lease. The replacement worker picks up the same request once it acquires the lease, reads the per-scope checkpoints in `sync_source_runs`, skips already-completed scopes, and resumes only unfinished work.
+
+## Independent source schedules
+
+Each source has its own scheduled enqueue time. These are production schedules:
+
+| Source | Schedule | Notes |
+|---|---|---|
+| Azure inventory and Policy posture | Daily 10:00 UTC | Full paginated ARG resource collection |
+| Flux Intelligence | Daily 10:30 UTC | Versioned rule-pack evaluation |
+| Cost Management (actual + amortized MTD) | Daily 11:00 UTC | Per-subscription, QPU-paced |
+| Daily cost history and anomaly evaluation | Daily 12:30 UTC | 90-day initial backfill; 14-day rolling refresh thereafter |
+| FOCUS cost-export ingestion | Every 6 hours | Idempotent; current FOCUS dates take precedence over Query API rows |
+| Azure Advisor | Every 6 hours at `:45` | Active Cost and Performance recommendations only |
+| Azure Monitor | Every 6 hours at `:15` | Rolling 14-day VM CPU, network, and disk summaries |
+| LogicMonitor discovery | Every 6 hours at `:10` | Identity discovery, separate from metric collection |
+| LogicMonitor metrics | Every 30 minutes | Rotating checkpointed batches of least-recently-collected devices |
+| Azure Retail Prices | Every 6 hours | Discovers new Advisor target SKU keys; refreshes each cached rate daily |
+| Microsoft FinOps Toolkit v14 | Weekly, Sunday 03:00 UTC | Checksum-verified open data |
+| Flux right-sizing proposal | Daily 04:05 UTC | Regenerates after 72 hours; administrators can force a refresh from Administration |
+
+<Note>
+An ad-hoc sync triggered via `POST /api/integrations/azure/sync` collects inventory, Advisor, Flux Intelligence, and Azure Policy only. It deliberately excludes Cost Management to avoid competing for QPU quota with the scheduled cost jobs.
+</Note>
+
+## Checkpoint and recovery
+
+`sync_source_runs` records every per-source and per-subscription/scope attempt, including row counts, retry attempts, and last-good retention status. This table is the authoritative checkpoint:
+
+- **Recovery skips completed scopes** — a recovering worker reads the checkpoint and skips any scope that already succeeded.
+- **Partial success is preserved** — if a later scope fails, all previously checkpointed scopes are unaffected. Their data is already committed to DuckDB.
+- **Retry ordering** — missing and failed scopes run first; never-collected commitment scopes run ahead of healthy cost refreshes.
+
+## Last-good retention
+
+`source_sync_state` advances only after a scope fully completes. This means:
+
+- A throttled subscription retains its previous good cost view.
+- A failed Flux Intelligence rule pack retains the previous complete finding set.
+- A partial initial cost-history scope remains retry-eligible rather than being promoted to rolling refresh.
+
+If the Cost Management Query API persistently fails for a scope, an automated Cost Details fallback fills the affected calendar months asynchronously (up to `FLUX_COST_DETAILS_MAX_REPORTS_PER_RUN` reports per daily run) without extending the primary Azure sync.
+
+## Schedule-aware staleness
+
+Flux does not declare a source stale just because data has not changed recently. A source is **stale** only when the last expected scheduled run has been missed **plus** a grace window:
+
+- Daily sources: 4-hour grace window after the scheduled time.
+- Interval sources: 2-hour grace window.
+
+A hard backstop (`stale_after_hours`) still applies to sources without a defined schedule. Unprovisioned sources (never synced) do not trigger the staleness warning banner.
+
+## Administration page
+
+The **Administration** page shows the following for every source:
+
+- Schedule (next expected run time)
+- Current row count
+- Completed vs expected scopes
+- Last attempt time and outcome
+- Whether last-good data is being served
+
+The Overview and Opportunities pages warn when source evidence is stale or degraded.
+
+## Configuration reference
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `FLUX_SYNC_WORKER_MODE` | `embedded` (local) / `external` (App Service) | Selects the local embedded consumer loop or the singleton continuous WebJob |
+| `FLUX_SYNC_WORKER_POLL_SECONDS` | `5` | Queue polling interval for the durable sync worker |
+| `FLUX_SYNC_CLAIM_LEASE_SECONDS` | `900` | Duration of the sync execution lease; crashed-worker claims become reclaimable after this lapses |

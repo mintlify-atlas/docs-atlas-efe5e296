@@ -1,0 +1,70 @@
+---
+title: "Flux: Azure FinOps Intelligence for Cloud Teams"
+sidebarTitle: "Introduction"
+description: "Flux is a governed Azure FinOps workspace that synchronizes inventory, cost, and telemetry into DuckDB and surfaces explainable optimization opportunities. Learn what Flux does and how it fits your cloud operations workflow."
+---
+
+Flux is a focused Azure inventory and FinOps intelligence workspace — *governed evidence, analyzed.* It synchronizes Azure Resource Graph, Azure Advisor, Cost Management, Azure Monitor, and LogicMonitor coverage into a locally-embedded DuckDB database, presents your estate through a modern React 19 dashboard, and surfaces explainable optimization opportunities with full source lineage. Built on FastAPI and Pydantic for the backend and React 19 with Vite and Recharts for the frontend, Flux is designed to be deployed as a Linux App Service behind Microsoft Entra ID Easy Auth, giving cloud teams a single, auditable workspace for every FinOps conversation.
+
+## What Flux collects
+
+<CardGroup cols={2}>
+  <Card title="Inventory" icon="server">
+    Azure Resource Graph (ARG) provides paginated, enriched resource snapshots across every configured subscription. Resource records carry cost, utilization, and opportunity enrichment fields alongside the raw ARG JSON.
+  </Card>
+  <Card title="Cost" icon="dollar-sign">
+    Azure Cost Management (actual and amortized) and FOCUS v1.0 cost exports give Flux a governed, checkpointed daily cost history. A 90-day initial backfill runs automatically for each new subscription, with rolling 14-day refreshes thereafter. An automated Cost Details fallback fills checkpointed months when the Query API is unavailable.
+  </Card>
+  <Card title="Advisor & Signals" icon="lightbulb">
+    Azure Advisor recommendations are collected through ARG, semantically de-duplicated, and corroborated with deterministic **Flux Signals** findings — versioned rules covering VM state, unattached disks, snapshots, Public IPs, NICs, NAT gateways, storage modernization, and tagging.
+  </Card>
+  <Card title="Telemetry" icon="chart-line">
+    Azure Monitor platform metrics and LogicMonitor agent data provide VM CPU, memory, disk, and network observations. Incremental checkpointed collection runs every 30 minutes; all evidence feeds the governed right-sizing model.
+  </Card>
+</CardGroup>
+
+## Product areas
+
+Flux contains ten active areas, each scoped to a specific FinOps or cloud-operations need:
+
+| Area | What it does |
+|---|---|
+| **Overview** | Rich charts for estate shape, regional footprint, actual month-to-date cost, utilization coverage, and a governed valued-action total. |
+| **Inventory** | Searchable, paginated Azure Resource Graph inventory enriched with cost and VM performance summaries. |
+| **Changes** | Exact consecutive-snapshot inventory diffs (create / delete / resize / retier / retag / move / reconfiguration) with filterable evidence and warming-up-aware median/MAD change-volume detection. |
+| **Cost anomalies** | Governed seasonal anomaly detection using matching-weekday median/MAD baselines, a triage and review workflow, and CSV/evidence-pack export. |
+| **Reports** | Native cost summary, forecast, workload, retirement, allocation, budget, Azure Policy posture, and a governed FOCUS charge-level investigation. |
+| **Explore** | Ad-hoc query builder over the governed semantic layer, plus an expert mode that generates validated read-only SQL from a plain-language question. |
+| **Opportunities** | Unified Azure Advisor recommendations and branded Flux Signals findings with evidence, confidence, actual-cost context, and provenance-aware gross and risk-adjusted value. |
+| **Right-sizing plan** | Planning boards that turn telemetry-backed candidates into reservation and savings-plan purchase decisions with a decision log. |
+| **Flux Intelligence** | **Ask Flux** — a read-only conversational assistant that answers from 19 governed server-side tools rather than raw database access. |
+| **Administration** | Azure tenant/subscription scope, independent source-run status, telemetry coverage, AI configuration, and a health center. |
+
+## Technology stack
+
+- **React 19 + Vite + TypeScript** — modular pages, responsive layout, route-level code splitting, Recharts for data visualization, Lucide for icons.
+- **FastAPI + Pydantic** — typed, async API with interactive docs at `/docs`; the same FastAPI process serves the built React assets in production.
+- **DuckDB 1.4.5** (exact-pinned) — append-only analytical store with current views; all writes serialized through a singleton worker. Stored at `data/flux.duckdb` by default.
+- **Azure Identity** — secretless access to Azure Resource Graph, Advisor, and Cost Management via managed identity in App Service or local Azure PowerShell session in development.
+- **App Service Authentication** — Easy Auth validates Entra ID users and injects `X-MS-CLIENT-PRINCIPAL`; Flux decodes roles without touching tokens directly.
+
+## Identity model
+
+Flux uses two independent identities that never need to share a credential:
+
+**People authenticate with Microsoft Entra ID.** App Service Authentication (Easy Auth) validates the user and injects the `X-MS-CLIENT-PRINCIPAL` claims payload. Flux decodes it and maps Entra app-role values or group object IDs to internal `reader` and `admin` roles. The default role values are `Flux.Reader` and `Flux.Admin`.
+
+**Flux authenticates to Azure with managed identity.** The application obtains a management token without any client secret and queries Azure Resource Graph, Advisor, and Cost Management for explicitly configured subscriptions. In development, the local Azure PowerShell session (`Connect-AzAccount`) plays the same role.
+
+| Flux role | Access |
+|---|---|
+| `reader` | Overview, inventory, opportunities |
+| `admin` | All reader access, plus integration configuration and synchronization |
+
+Group object IDs can be substituted for app-role values through `FLUX_ENTRA_ADMIN_ASSIGNMENTS` and `FLUX_ENTRA_READER_ASSIGNMENTS`. Local development defaults to a mock administrator — `FLUX_AUTH_MODE=mock` — without requiring any Entra configuration.
+
+## Maturity
+
+<Note>
+  **Flux is currently a focused internal alpha.** Core platform areas — inventory, Cost Management, Advisor, Entra authorization, managed identity, synchronization operations, DuckDB model, and backup — are at Beta maturity. Forward-facing areas such as Flux Intelligence (Ask Flux), LogicMonitor, multi-source right-sizing, native reporting, inventory drift, and Azure Monitor are at Alpha maturity. Before production deployment, you must configure and validate Easy Auth, app-role assignments, managed identity RBAC, subscription scope, and operational health notifications. See the production gaps checklist in the README before going live.
+</Note>

@@ -1,0 +1,170 @@
+---
+title: "Inventory and Changes Endpoints"
+sidebarTitle: "Inventory & Changes"
+description: "GET /api/inventory returns paginated Azure inventory with enrichment. GET /api/changes returns inventory diffs. GET /api/changes/anomalies returns change-volume baselines. Includes CSV and XLSX export."
+---
+
+The inventory and changes endpoints expose Azure Resource Graph snapshot data enriched with cost, utilization, and opportunity signals — plus consecutive-snapshot diffs for drift detection. All endpoints require a `reader` or `admin` session and support pagination. Export variants stream up to 50,000 rows as CSV or XLSX.
+
+---
+
+## GET /api/inventory
+
+Returns a paginated, filterable view of the Azure estate. Each resource record is enriched with monthly cost estimates, utilization telemetry, and the highest-severity opportunity Flux has detected for that resource.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `search` | string | `""` | Free-text match against resource name, ID, type, subscription, and resource group. |
+| `resourceType` | string | `""` | Filter by Azure resource type (e.g. `microsoft.compute/virtualmachines`). |
+| `subscriptionId` | string | `""` | Filter to a single subscription GUID. |
+| `region` | string | `""` | Filter by Azure region name (e.g. `eastus`). |
+| `virtualTagKey` | string | `""` | Filter to resources that have this virtual tag key applied. |
+| `virtualTagValue` | string | `""` | Combined with `virtualTagKey` — filter to resources matching both key and value. |
+| `opportunityOnly` | boolean | `false` | When `true`, returns only resources that have at least one active opportunity. |
+| `limit` | integer | `250` | Page size. Must be between `1` and `2000`. |
+| `offset` | integer | `0` | Zero-based row offset for pagination. |
+
+### Response
+
+```json
+{
+  "items": [ /* array of resource records */ ],
+  "total": 1842
+}
+```
+
+Each item in `items` contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Resource display name. |
+| `resourceId` | string | Full Azure resource ID. |
+| `resourceType` | string | Azure resource type. |
+| `subscriptionName` | string | Friendly subscription name. |
+| `subscriptionId` | string | Subscription GUID. |
+| `resourceGroup` | string | Resource group name. |
+| `region` | string | Azure region. |
+| `kind` | string | Resource kind sub-type where applicable. |
+| `sku` | string | SKU / size (e.g. `Standard_D4s_v3`). |
+| `provisioningState` | string | Last-known provisioning state. |
+| `managedBy` | string | Resource ID of the managing resource, if any. |
+| `estimatedMonthlyCost` | number \| null | Pay-as-you-go estimated monthly cost. |
+| `amortizedMonthlyCost` | number \| null | Amortized monthly cost (includes reserved instance and savings plan discounts). |
+| `costCurrency` | string | ISO 4217 currency code. |
+| `costSource` | string | Source of the cost enrichment (e.g. `cost_management`). |
+| `utilizationPercent` | number \| null | Most recent utilization percentage (CPU for VMs). |
+| `utilizationSource` | string \| null | Telemetry provider that produced the utilization figure. |
+| `opportunityKind` | string \| null | Category of the highest-severity opportunity (e.g. `RightSize`, `Shutdown`). |
+| `opportunityReason` | string \| null | One-sentence rationale for the opportunity. |
+| `estimatedMonthlySavings` | number \| null | Estimated monthly savings from acting on the opportunity. |
+| `observedAt` | string | ISO 8601 timestamp of the Resource Graph snapshot. |
+| `tags` | object | Native Azure resource tags as a key-value map. |
+| `effectiveVirtualTags` | object | Computed virtual tags (from rules and overrides) as a key-value map. |
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/inventory?resourceType=microsoft.compute/virtualmachines&opportunityOnly=true&limit=50" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/inventory/export
+
+Streams the full filtered inventory as a CSV or XLSX file. Accepts the same filter parameters as `GET /api/inventory` and can return up to **50,000 rows**.
+
+**Authentication:** `reader`
+
+### Additional parameter
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `format` | string | `"csv"` | Output format — `csv` or `xlsx`. |
+
+XLSX exports include a **Metadata** sheet recording the generation timestamp, analytics read mode, active snapshot version (when applicable), and all applied filters. This preserves provenance for downstream spreadsheet workflows.
+
+The CSV and XLSX column set matches the full `items` field list from `GET /api/inventory`, with `tags` and `effectiveVirtualTags` serialized as compact JSON strings.
+
+```bash
+curl "https://your-flux-host/api/inventory/export?format=xlsx&subscriptionId=<guid>" \
+  -H "Cookie: AppServiceAuthSession=<token>" \
+  -o flux-azure-inventory.xlsx
+```
+
+---
+
+## GET /api/changes
+
+Returns paginated inventory diffs between consecutive Azure Resource Graph snapshots, capturing resource additions, deletions, property changes, and cost movements.
+
+**Authentication:** `reader`
+
+### Query parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `search` | string | `""` | Free-text search across resource name, ID, and type. |
+| `changeType` | string | `""` | Filter by diff type (e.g. `added`, `removed`, `modified`). |
+| `subscriptionId` | string | `""` | Filter to a single subscription GUID. |
+| `resourceGroup` | string | `""` | Filter to a single resource group. |
+| `windowDays` | integer | `7` | Look-back window in days. Must be between `0` and `365`. |
+| `limit` | integer | `250` | Page size. Must be between `1` and `2000`. |
+| `offset` | integer | `0` | Zero-based row offset for pagination. |
+
+### Response
+
+```json
+{
+  "items": [ /* array of change records */ ],
+  "total": 84
+}
+```
+
+Each change record includes the affected resource's identity fields, the detected change type, the before/after property evidence, and the observation timestamps for both snapshots.
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/changes?windowDays=14&changeType=removed" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+---
+
+## GET /api/changes/anomalies
+
+Returns the current change-volume baselines and any statistically anomalous change volumes detected across the estate. Flux uses a **median/MAD** (median absolute deviation) baseline computed over the configured observation history — the same statistical approach used for cost anomalies.
+
+This endpoint is also accessible at the legacy path `GET /api/anomalies`.
+
+**Authentication:** `reader`
+
+**No query parameters.** The response contains the estate-level and per-scope baselines, the current-window change counts, computed k-scores, and any scopes that exceed the anomaly threshold.
+
+### Example
+
+```bash
+curl "https://your-flux-host/api/changes/anomalies" \
+  -H "Cookie: AppServiceAuthSession=<token>"
+```
+
+```json
+{
+  "baselines": [
+    {
+      "scope": "subscription/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+      "median": 12.0,
+      "mad": 3.5,
+      "currentCount": 47,
+      "kScore": 10.0,
+      "isAnomalous": true
+    }
+  ],
+  "anomalyCount": 1
+}
+```
